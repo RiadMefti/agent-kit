@@ -1,21 +1,14 @@
 import type OpenAI from "openai";
 import type AIClient from "../client/ai-client";
-import { add } from "../tools/addition-tool";
-import { multiply } from "../tools/multiplication-tool";
-
-type ToolHandler = (args: unknown) => unknown;
+import { command } from "../tools/bash-tool";
+type ToolHandler = (args: unknown) => Promise<unknown> | unknown;
 
 const toolHandlers: Record<string, ToolHandler> = {
-  add: (args) => {
-    const { numbers } = args as { numbers: number[] };
-    const [a, b, ...rest] = numbers;
-    return add(a!, b!, ...rest);
-  },
-  multiply: (args) => {
-    const { numbers } = args as { numbers: number[] };
-    const [a, b, ...rest] = numbers;
-    return multiply(a!, b!, ...rest);
-  },
+  bash: async (args) => {
+    const { command: cmd } = args as { command: string };
+    return await command(cmd);
+  }
+
 };
 
 class Agent {
@@ -28,7 +21,7 @@ class Agent {
     this.maxIterations = maxIterations;
   }
 
-  private handleToolCall(name: string, rawArgs: string): string {
+  private async handleToolCall(name: string, rawArgs: string): Promise<string> {
     const handler = toolHandlers[name];
     if (!handler) {
       return JSON.stringify({ error: `Unknown tool: ${name}` });
@@ -36,7 +29,7 @@ class Agent {
 
     try {
       const args = JSON.parse(rawArgs);
-      const result = handler(args);
+      const result = await handler(args);
       return JSON.stringify({ result });
     } catch (e) {
       return JSON.stringify({ error: String(e) });
@@ -57,7 +50,7 @@ class Agent {
 
       for (const toolCall of choice.message.tool_calls!) {
         if (toolCall.type !== "function") continue;
-        const content = this.handleToolCall(
+        const content = await this.handleToolCall(
           toolCall.function.name,
           toolCall.function.arguments
         );
