@@ -1,5 +1,4 @@
-import { addTool } from "./addition-tool";
 import type OpenAI from "openai";
-import { multiplyTool } from "./multiplication-tool";
+import { bashTool } from "./bash-tool";
 
-export const tools: OpenAI.ChatCompletionTool[] = [addTool, multiplyTool];
+export const tools: OpenAI.ChatCompletionTool[] = [bashTool];
