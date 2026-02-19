@@ -4,6 +4,7 @@ import { command } from "../tools/bash-tool";
 import { editFile, readFile, writeFile } from "../tools/file-tools";
 import { grep } from "../tools/ripgrep-tool";
 import { todoRead, todoWrite } from "../tools/todo-tool";
+import { globSearch } from "../tools/glob-tool";
 import type AIClientCodex from "../client/ai-client-codex";
 
 
@@ -50,6 +51,13 @@ const toolHandlers: Record<string, ToolHandler> = {
       todos: Array<{ content: string; status: string; priority: string }>;
     };
     return await todoWrite(todos);
+  },
+  glob: async (args) => {
+    const { pattern, path } = args as {
+      pattern: string;
+      path: string | null;
+    };
+    return await globSearch(pattern, path);
   },
 };
 class Agent {
