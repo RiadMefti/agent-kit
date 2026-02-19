@@ -87,6 +87,14 @@ export interface IAIClient {
 
 export type ToolHandler = (args: unknown) => Promise<unknown>;
 
+export interface ToolCallEvent {
+  name: string;
+  args: unknown;
+  status: "started" | "completed";
+  result?: string;
+  duration?: number;
+}
+
 export interface ToolEntry {
   definition: ToolDefinition;
   handler: ToolHandler;

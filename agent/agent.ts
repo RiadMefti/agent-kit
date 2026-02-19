@@ -3,12 +3,14 @@ import type {
   ChatMessage,
   ToolEntry,
   ToolHandler,
+  ToolCallEvent,
 } from "../client/types";
 
 export interface AgentOptions {
   maxIterations?: number;
   systemPrompt?: string;
   label?: string;
+  onToolCall?: (event: ToolCallEvent) => void;
 }
 
 export interface AgentResult {
@@ -24,6 +26,7 @@ class Agent {
   private maxIterations: number;
   private systemPrompt: string;
   private label: string;
+  private onToolCall?: (event: ToolCallEvent) => void;
   private messages: ChatMessage[] = [];
   private toolHandlers: Record<string, ToolHandler>;
   private toolDefinitions: ToolEntry["definition"][];
@@ -37,6 +40,7 @@ class Agent {
     this.maxIterations = options?.maxIterations ?? 30;
     this.systemPrompt = options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     this.label = options?.label ?? "agent";
+    this.onToolCall = options?.onToolCall;
 
     this.toolHandlers = {};
     this.toolDefinitions = [];
@@ -90,22 +94,26 @@ class Agent {
       iterations++;
       this.messages.push(choice.message);
 
-      const toolNames = choice.message.tool_calls!
-        .filter((tc) => tc.type === "function")
-        .map((tc) => tc.function.name);
-      console.log(
-        `  [${this.label}] iteration ${iterations}: calling ${toolNames.join(", ")}`
-      );
-
       const toolCallResults = await Promise.all(
         choice.message.tool_calls!.map(async (toolCall) => {
           if (toolCall.type !== "function") {
             return { tool_call_id: toolCall.id, content: "{}" };
           }
+          const name = toolCall.function.name;
+          let parsedArgs: unknown;
+          try {
+            parsedArgs = JSON.parse(toolCall.function.arguments);
+          } catch {
+            parsedArgs = toolCall.function.arguments;
+          }
+          this.onToolCall?.({ name, args: parsedArgs, status: "started" });
+          const start = Date.now();
           const content = await this.handleToolCall(
-            toolCall.function.name,
+            name,
             toolCall.function.arguments
           );
+          const duration = Date.now() - start;
+          this.onToolCall?.({ name, args: parsedArgs, status: "completed", result: content, duration });
           return { tool_call_id: toolCall.id, content };
         })
       );
