@@ -4,11 +4,8 @@ import { grepTool, grep } from "./ripgrep-tool";
 import { readTool, writeTool, editTool, readFile, writeFile, editFile } from "./file-tools";
 import { todoReadTool, todoWriteTool, todoRead, todoWrite } from "./todo-tool";
 import { globTool, globSearch } from "./glob-tool";
+import { webFetchTool, webFetch } from "./web-fetch-tool";
 
-/**
- * Base tool entries — all tools except `task` (which requires the AI client).
- * Each entry pairs a ToolDefinition with its handler implementation.
- */
 export const baseToolEntries: ToolEntry[] = [
   {
     definition: bashTool,
@@ -87,6 +84,16 @@ export const baseToolEntries: ToolEntry[] = [
         path: string | null;
       };
       return await globSearch(pattern, path);
+    },
+  },
+  {
+    definition: webFetchTool,
+    handler: async (args) => {
+      const { url, max_length } = args as {
+        url: string;
+        max_length: number | null;
+      };
+      return await webFetch(url, max_length ?? undefined);
     },
   },
 ];

@@ -63,7 +63,6 @@ export function createTaskToolEntry(
 
     const allEntries = getAllToolEntries();
 
-    // Filter tool entries based on the requested tool names
     let subagentEntries: ToolEntry[];
     if (tools !== null && tools.length > 0) {
       const requestedNames = new Set(tools);

@@ -154,7 +154,6 @@ class AIClientCodex implements IAIClient {
   ): Promise<ChatResponse> {
     const maxRetries = 3;
 
-    // Extract the system prompt from messages to use as Codex "instructions"
     const systemMsg = messages.find((m) => m.role === "system");
     const instructions = systemMsg?.content ?? "You are a helpful assistant.";
 

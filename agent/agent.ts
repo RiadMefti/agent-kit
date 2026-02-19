@@ -6,18 +6,13 @@ import type {
 } from "../client/types";
 
 export interface AgentOptions {
-  /** Maximum number of tool-use loop iterations before aborting. D*/
   maxIterations?: number;
-  /** System prompt prepended to the conversation. */
   systemPrompt?: string;
-  /** Label used in log output to identify this agent. Default: "agent" */
   label?: string;
 }
 
 export interface AgentResult {
-  /** The final text answer from the agent. */
   answer: string;
-  /** How many tool-use loop iterations were executed. */
   iterations: number;
 }
 
@@ -43,7 +38,6 @@ class Agent {
     this.systemPrompt = options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     this.label = options?.label ?? "agent";
 
-    // Build the handler lookup map and definition list from unified entries
     this.toolHandlers = {};
     this.toolDefinitions = [];
     for (const entry of toolEntries) {
@@ -53,7 +47,6 @@ class Agent {
     }
   }
 
-  /** Returns the tool definitions for passing to the AI client. */
   getToolDefinitions(): ToolEntry["definition"][] {
     return this.toolDefinitions;
   }
@@ -97,7 +90,6 @@ class Agent {
       iterations++;
       this.messages.push(choice.message);
 
-      // Execute all tool calls in parallel
       const toolNames = choice.message.tool_calls!
         .filter((tc) => tc.type === "function")
         .map((tc) => tc.function.name);
@@ -118,7 +110,6 @@ class Agent {
         })
       );
 
-      // Push all tool results into the conversation
       for (const result of toolCallResults) {
         this.messages.push({
           role: "tool",

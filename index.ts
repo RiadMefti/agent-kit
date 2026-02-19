@@ -16,10 +16,10 @@ const agent = new Agent(aiClient, allToolEntries, { label: "parent" });
 
 
 const result = await agent.run(
-  `Use the task tool to do these two things as two separate task calls:
-1. Task 1: Use only the "glob" tool to find all TypeScript files in this project and count them.
-2. Task 2: Use only the "read" tool to read the file "package.json" and summarize what this project is.
-After both tasks complete, combine their results into a final summary.`
+  `Use the task tool to spawn two subagents in parallel:
+1. Subagent 1: Give it only the "web_fetch" tool. It should fetch https://news.ycombinator.com and return the top 5 story titles.
+2. Subagent 2: Give it only the "web_fetch" tool. It should fetch https://api.github.com/repos/oven-sh/bun and return the star count, description, and latest release info.
+After both subagents finish, combine their findings into a brief report.`
 );
 
 console.log(result.answer);

@@ -87,10 +87,6 @@ export interface IAIClient {
 
 export type ToolHandler = (args: unknown) => Promise<unknown>;
 
-/**
- * Unified tool entry: pairs a tool's JSON schema definition with its handler.
- * This eliminates the need to register definitions and handlers separately.
- */
 export interface ToolEntry {
   definition: ToolDefinition;
   handler: ToolHandler;
