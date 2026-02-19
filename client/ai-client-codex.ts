@@ -1,6 +1,4 @@
-import { readFileSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { getAccessToken } from "./codex-auth";
 import type {
   IAIClient,
   ToolDefinition,
@@ -12,14 +10,12 @@ import type {
 const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 
 class AIClientCodex implements IAIClient {
-  private model = "gpt-5.3-codex";
+  private model: string;
   private accessToken: string;
 
-  constructor() {
-    const auth = JSON.parse(
-      readFileSync(join(homedir(), ".codex", "auth.json"), "utf-8")
-    );
-    this.accessToken = auth.tokens.access_token;
+  constructor(model?: string) {
+    this.model = model || "gpt-5.3-codex";
+    this.accessToken = getAccessToken();
   }
 
   private transformTools(tools: ToolDefinition[]): any[] {
