@@ -59,7 +59,6 @@ export async function todoWrite(
   return `Todo list updated with ${newTodos.length} item(s).\n${JSON.stringify(newTodos, null, 2)}`;
 }
 
-// --- Tool Definitions ---
 
 export const todoReadTool: ToolDefinition = {
   type: "function",

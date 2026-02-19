@@ -14,25 +14,16 @@ const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 class AIClientCodex implements IAIClient {
   private model = "gpt-5.3-codex";
   private accessToken: string;
-  private tools: ToolDefinition[] = [];
-  private systemInstruction = `You are a coding agent working inside a local project.
-Use tools proactively before asking clarifying questions.
-- First inspect the project structure and identify the correct files and paths.
-- If a path is ambiguous, discover it with available tools (read/grep/bash) instead of guessing.
-- Read relevant files before editing and apply minimal targeted changes.
-- Only ask the user a question after tool-based investigation if a real blocker remains.
-Always verify assumptions about the project using tools.`;
 
-  constructor(tools: ToolDefinition[]) {
-    this.tools = tools;
+  constructor() {
     const auth = JSON.parse(
       readFileSync(join(homedir(), ".codex", "auth.json"), "utf-8")
     );
     this.accessToken = auth.tokens.access_token;
   }
 
-  private transformTools(): any[] {
-    return this.tools.map((tool) => ({
+  private transformTools(tools: ToolDefinition[]): any[] {
+    return tools.map((tool) => ({
       type: "function",
       name: tool.function.name,
       description: tool.function.description,
@@ -157,18 +148,21 @@ Always verify assumptions about the project using tools.`;
     };
   }
 
-  async chatCompletion(messages: ChatMessage[]): Promise<ChatResponse> {
+  async chatCompletion(
+    messages: ChatMessage[],
+    tools: ToolDefinition[]
+  ): Promise<ChatResponse> {
     const maxRetries = 3;
-    const fullMessages: ChatMessage[] = [
-      { role: "system", content: this.systemInstruction },
-      ...messages,
-    ];
+
+    // Extract the system prompt from messages to use as Codex "instructions"
+    const systemMsg = messages.find((m) => m.role === "system");
+    const instructions = systemMsg?.content ?? "You are a helpful assistant.";
 
     const body = {
       model: this.model,
-      instructions: this.systemInstruction,
-      input: this.transformMessages(fullMessages),
-      tools: this.transformTools(),
+      instructions,
+      input: this.transformMessages(messages),
+      tools: this.transformTools(tools),
       tool_choice: "auto",
       parallel_tool_calls: false,
       reasoning: { summary: "auto" },
