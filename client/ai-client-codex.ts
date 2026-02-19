@@ -1,14 +1,20 @@
-import OpenAI from "openai";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import type {
+  IAIClient,
+  ToolDefinition,
+  ChatMessage,
+  ChatResponse,
+  ToolCall,
+} from "./types";
 
 const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 
-class AIClientCodex {
+class AIClientCodex implements IAIClient {
   private model = "gpt-5.3-codex";
   private accessToken: string;
-  private tools: OpenAI.ChatCompletionTool[] = [];
+  private tools: ToolDefinition[] = [];
   private systemInstruction = `You are a coding agent working inside a local project.
 Use tools proactively before asking clarifying questions.
 - First inspect the project structure and identify the correct files and paths.
@@ -17,7 +23,7 @@ Use tools proactively before asking clarifying questions.
 - Only ask the user a question after tool-based investigation if a real blocker remains.
 Always verify assumptions about the project using tools.`;
 
-  constructor(tools: OpenAI.ChatCompletionTool[]) {
+  constructor(tools: ToolDefinition[]) {
     this.tools = tools;
     const auth = JSON.parse(
       readFileSync(join(homedir(), ".codex", "auth.json"), "utf-8")
@@ -26,7 +32,7 @@ Always verify assumptions about the project using tools.`;
   }
 
   private transformTools(): any[] {
-    return this.tools.map((tool: any) => ({
+    return this.tools.map((tool) => ({
       type: "function",
       name: tool.function.name,
       description: tool.function.description,
@@ -34,38 +40,25 @@ Always verify assumptions about the project using tools.`;
     }));
   }
 
-  private transformMessages(
-    messages: OpenAI.ChatCompletionMessageParam[]
-  ): any[] {
+  private transformMessages(messages: ChatMessage[]): any[] {
     const input: any[] = [];
 
     for (const msg of messages) {
-      if (msg.role === "system" || msg.role === "developer") {
+      if (msg.role === "system") {
         input.push({
           type: "message",
           role: "developer",
-          content: [
-            {
-              type: "input_text",
-              text: typeof msg.content === "string" ? msg.content : "",
-            },
-          ],
+          content: [{ type: "input_text", text: msg.content }],
         });
       } else if (msg.role === "user") {
         input.push({
           type: "message",
           role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: typeof msg.content === "string" ? msg.content : "",
-            },
-          ],
+          content: [{ type: "input_text", text: msg.content }],
         });
       } else if (msg.role === "assistant") {
-        const assistantMsg = msg as any;
-        if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
-          for (const tc of assistantMsg.tool_calls) {
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          for (const tc of msg.tool_calls) {
             input.push({
               type: "function_call",
               name: tc.function.name,
@@ -77,26 +70,14 @@ Always verify assumptions about the project using tools.`;
           input.push({
             type: "message",
             role: "assistant",
-            content: [
-              {
-                type: "output_text",
-                text:
-                  typeof assistantMsg.content === "string"
-                    ? assistantMsg.content
-                    : "",
-              },
-            ],
+            content: [{ type: "output_text", text: msg.content ?? "" }],
           });
         }
       } else if (msg.role === "tool") {
-        const toolMsg = msg as OpenAI.ChatCompletionToolMessageParam;
         input.push({
           type: "function_call_output",
-          call_id: toolMsg.tool_call_id,
-          output:
-            typeof toolMsg.content === "string"
-              ? toolMsg.content
-              : JSON.stringify(toolMsg.content),
+          call_id: msg.tool_call_id,
+          output: msg.content,
         });
       }
     }
@@ -127,9 +108,9 @@ Always verify assumptions about the project using tools.`;
     return responseData;
   }
 
-  private transformResponse(data: any): OpenAI.Chat.Completions.ChatCompletion {
+  private transformResponse(data: any): ChatResponse {
     let textContent = "";
-    const toolCalls: any[] = [];
+    const toolCalls: ToolCall[] = [];
 
     for (const item of data.output || []) {
       if (item.type === "message" && item.role === "assistant") {
@@ -152,8 +133,6 @@ Always verify assumptions about the project using tools.`;
 
     return {
       id: data.id || "codex-response",
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
       model: data.model || this.model,
       choices: [
         {
@@ -164,7 +143,6 @@ Always verify assumptions about the project using tools.`;
             ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
           },
           finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
-          logprobs: null,
         },
       ],
       usage: data.usage
@@ -175,15 +153,13 @@ Always verify assumptions about the project using tools.`;
             (data.usage.input_tokens || 0) +
             (data.usage.output_tokens || 0),
         }
-        : { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-    } as OpenAI.Chat.Completions.ChatCompletion;
+        : undefined,
+    };
   }
 
-  async chatCompletion(
-    messages: OpenAI.ChatCompletionMessageParam[]
-  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+  async chatCompletion(messages: ChatMessage[]): Promise<ChatResponse> {
     const maxRetries = 3;
-    const fullMessages: OpenAI.ChatCompletionMessageParam[] = [
+    const fullMessages: ChatMessage[] = [
       { role: "system", content: this.systemInstruction },
       ...messages,
     ];

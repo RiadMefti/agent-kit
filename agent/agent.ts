@@ -1,12 +1,9 @@
-import type OpenAI from "openai";
-import type AIClient from "../client/ai-client";
+import type { IAIClient, ChatMessage, AssistantMessage } from "../client/types";
 import { command } from "../tools/bash-tool";
 import { editFile, readFile, writeFile } from "../tools/file-tools";
 import { grep } from "../tools/ripgrep-tool";
 import { todoRead, todoWrite } from "../tools/todo-tool";
 import { globSearch } from "../tools/glob-tool";
-import type AIClientCodex from "../client/ai-client-codex";
-
 
 type ToolHandler = (args: unknown) => Promise<unknown>;
 
@@ -60,12 +57,13 @@ const toolHandlers: Record<string, ToolHandler> = {
     return await globSearch(pattern, path);
   },
 };
-class Agent {
-  private aiClient: AIClientCodex;
-  private maxIterations: number;
-  private messages: OpenAI.ChatCompletionMessageParam[] = [];
 
-  constructor(aiClient: AIClientCodex, maxIterations: number = 30) {
+class Agent {
+  private aiClient: IAIClient;
+  private maxIterations: number;
+  private messages: ChatMessage[] = [];
+
+  constructor(aiClient: IAIClient, maxIterations: number = 30) {
     this.aiClient = aiClient;
     this.maxIterations = maxIterations;
   }
@@ -103,7 +101,6 @@ class Agent {
           toolCall.function.name,
           toolCall.function.arguments
         );
-
 
         this.messages.push({
           role: "tool",

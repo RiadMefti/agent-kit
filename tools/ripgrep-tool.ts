@@ -1,4 +1,4 @@
-import type OpenAI from "openai";
+import type { ToolDefinition } from "../client/types";
 import { $ } from "bun";
 
 export async function grep(
@@ -17,7 +17,7 @@ export async function grep(
   }
 }
 
-export const grepTool: OpenAI.ChatCompletionTool = {
+export const grepTool: ToolDefinition = {
   type: "function",
   function: {
     name: "grep",

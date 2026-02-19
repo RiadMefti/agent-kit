@@ -1,4 +1,4 @@
-import type OpenAI from "openai";
+import type { ToolDefinition } from "../client/types";
 import { $ } from "bun"
 export async function command(command: string): Promise<string> {
   try {
@@ -14,7 +14,7 @@ export async function command(command: string): Promise<string> {
   }
 }
 
-export const bashTool: OpenAI.ChatCompletionTool = {
+export const bashTool: ToolDefinition = {
   type: "function",
   function: {
     name: "bash",

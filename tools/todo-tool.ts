@@ -1,4 +1,4 @@
-import type OpenAI from "openai";
+import type { ToolDefinition } from "../client/types";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 
@@ -59,9 +59,9 @@ export async function todoWrite(
   return `Todo list updated with ${newTodos.length} item(s).\n${JSON.stringify(newTodos, null, 2)}`;
 }
 
-// --- OpenAI Tool Definitions ---
+// --- Tool Definitions ---
 
-export const todoReadTool: OpenAI.ChatCompletionTool = {
+export const todoReadTool: ToolDefinition = {
   type: "function",
   function: {
     name: "todo_read",
@@ -77,7 +77,7 @@ export const todoReadTool: OpenAI.ChatCompletionTool = {
   },
 };
 
-export const todoWriteTool: OpenAI.ChatCompletionTool = {
+export const todoWriteTool: ToolDefinition = {
   type: "function",
   function: {
     name: "todo_write",

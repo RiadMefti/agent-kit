@@ -1,4 +1,4 @@
-import type OpenAI from "openai";
+import type { ToolDefinition } from "../client/types";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -61,7 +61,7 @@ export async function editFile(
   }
 }
 
-export const readTool: OpenAI.ChatCompletionTool = {
+export const readTool: ToolDefinition = {
   type: "function",
   function: {
     name: "read",
@@ -90,7 +90,7 @@ export const readTool: OpenAI.ChatCompletionTool = {
   },
 };
 
-export const writeTool: OpenAI.ChatCompletionTool = {
+export const writeTool: ToolDefinition = {
   type: "function",
   function: {
     name: "write",
@@ -114,7 +114,7 @@ export const writeTool: OpenAI.ChatCompletionTool = {
   },
 };
 
-export const editTool: OpenAI.ChatCompletionTool = {
+export const editTool: ToolDefinition = {
   type: "function",
   function: {
     name: "edit",
