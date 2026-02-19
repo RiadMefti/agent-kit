@@ -1,4 +1,4 @@
-import type OpenAI from "openai";
+import type { ToolDefinition } from "../client/types";
 import { Glob } from "bun";
 import { join } from "path";
 
@@ -55,7 +55,7 @@ export async function globSearch(
   }
 }
 
-export const globTool: OpenAI.ChatCompletionTool = {
+export const globTool: ToolDefinition = {
   type: "function",
   function: {
     name: "glob",
