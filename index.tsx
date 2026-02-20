@@ -4,6 +4,7 @@ import TextInput from "ink-text-input";
 import SelectInput from "ink-select-input";
 import Spinner from "ink-spinner";
 import AIClientCodex from "./client/ai-client-codex";
+import AIClientCopilot from "./client/ai-client-copilot";
 import Agent from "./agent/agent";
 import { baseToolEntries } from "./tools";
 import { createTaskToolEntry } from "./tools/task-tool";
@@ -15,21 +16,37 @@ import {
   fetchModels,
   runCodexLogin,
 } from "./client/codex-auth";
+import {
+  COPILOT_MODELS,
+  startDeviceFlow,
+  pollForToken,
+  getCopilotToken,
+} from "./client/copilot-auth";
 
 interface ChatEntry {
   type: "user" | "assistant" | "tool" | "system";
   content: string;
 }
 
+type Provider = "codex" | "copilot";
+
 type InputMode =
   | { kind: "chat" }
   | { kind: "command" }
-  | { kind: "model"; models: { slug: string; display_name: string; description: string }[] };
+  | { kind: "model"; models: { slug: string; display_name: string; description: string }[] }
+  | { kind: "provider" };
 
 const COMMAND_ITEMS = [
-  { label: "/models   - List and select a model", value: "/models" },
-  { label: "/login    - Login to Codex via browser", value: "/login" },
-  { label: "/status   - Show auth & model status", value: "/status" },
+  { label: "/models    - List and select a model", value: "/models" },
+  { label: "/provider  - Switch AI provider", value: "/provider" },
+  { label: "/login     - Login to current provider", value: "/login" },
+  { label: "/status    - Show auth & model status", value: "/status" },
+  { label: "cancel", value: "__cancel__" },
+];
+
+const PROVIDER_ITEMS = [
+  { label: "Codex", value: "codex" },
+  { label: "GitHub Copilot", value: "copilot" },
   { label: "cancel", value: "__cancel__" },
 ];
 
@@ -116,6 +133,7 @@ function App() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState("gpt-5.3-codex");
+  const [provider, setProvider] = useState<Provider>("codex");
   const [mode, setMode] = useState<InputMode>({ kind: "chat" });
 
   useInput((_input, key) => {
@@ -124,6 +142,9 @@ function App() {
       setMode({ kind: "chat" });
     }
     if (mode.kind === "model" && key.escape) {
+      setMode({ kind: "chat" });
+    }
+    if (mode.kind === "provider" && key.escape) {
       setMode({ kind: "chat" });
     }
   });
@@ -146,6 +167,18 @@ function App() {
       addEntry({ type: "user", content: cmd });
 
       if (cmd === "/models") {
+        if (provider === "copilot") {
+          setMode({
+            kind: "model",
+            models: COPILOT_MODELS.map((m) => ({
+              slug: m.slug,
+              display_name: m.display_name,
+              description: m.description,
+            })),
+          });
+          return;
+        }
+        // codex: fetch from API
         setLoading(true);
         try {
           const token = getAccessToken();
@@ -176,6 +209,25 @@ function App() {
       }
 
       if (cmd === "/login") {
+        if (provider === "copilot") {
+          try {
+            addEntry({ type: "system", content: "Starting GitHub device flow..." });
+            const flow = await startDeviceFlow();
+            addEntry({
+              type: "system",
+              content: `Open ${flow.verification_uri} and enter code: ${flow.user_code}`,
+            });
+            pollForToken(flow.device_code, flow.interval).then(() => {
+              addEntry({ type: "system", content: "Copilot login successful!" });
+            }).catch((e) => {
+              addEntry({ type: "system", content: `Copilot login failed: ${String(e)}` });
+            });
+          } catch (e) {
+            addEntry({ type: "system", content: String(e) });
+          }
+          return;
+        }
+        // codex
         try {
           const result = runCodexLogin();
           addEntry({ type: "system", content: result });
@@ -186,6 +238,22 @@ function App() {
       }
 
       if (cmd === "/status") {
+        if (provider === "copilot") {
+          try {
+            getCopilotToken();
+            addEntry({
+              type: "system",
+              content: `Provider: GitHub Copilot\nStatus: logged in\nModel: ${selectedModel}`,
+            });
+          } catch {
+            addEntry({
+              type: "system",
+              content: `Provider: GitHub Copilot\nStatus: not logged in — run /login\nModel: ${selectedModel}`,
+            });
+          }
+          return;
+        }
+        // codex
         try {
           const token = getAccessToken();
           const info = extractTokenInfo(token);
@@ -193,15 +261,20 @@ function App() {
           const expDate = info.exp ? new Date(info.exp * 1000).toLocaleString() : "unknown";
           addEntry({
             type: "system",
-            content: `Account: ${info.email || "unknown"}\nToken expires: ${expDate}\nStatus: ${expired ? "EXPIRED - run /login" : "valid"}\nModel: ${selectedModel}`,
+            content: `Provider: Codex\nAccount: ${info.email || "unknown"}\nToken expires: ${expDate}\nStatus: ${expired ? "EXPIRED - run /login" : "valid"}\nModel: ${selectedModel}`,
           });
         } catch (e) {
           addEntry({ type: "system", content: String(e) });
         }
         return;
       }
+
+      if (cmd === "/provider") {
+        setMode({ kind: "provider" });
+        return;
+      }
     },
-    [selectedModel],
+    [selectedModel, provider],
   );
 
   const handleCommandSelect = useCallback(
@@ -229,6 +302,22 @@ function App() {
     [],
   );
 
+  const handleProviderSelect = useCallback(
+    (item: { value: string }) => {
+      if (item.value === "__cancel__") {
+        setMode({ kind: "chat" });
+        return;
+      }
+      const newProvider = item.value as Provider;
+      setProvider(newProvider);
+      const defaultModel = newProvider === "copilot" ? "claude-sonnet-4.6" : "gpt-5.3-codex";
+      setSelectedModel(defaultModel);
+      setMode({ kind: "chat" });
+      addEntry({ type: "system", content: `Switched to ${newProvider} (model: ${defaultModel})` });
+    },
+    [],
+  );
+
   const handleSubmit = useCallback(
     async (value: string) => {
       const trimmed = value.trim();
@@ -252,7 +341,9 @@ function App() {
       addEntry({ type: "user", content: trimmed });
       setLoading(true);
 
-      const aiClient = new AIClientCodex(selectedModel);
+      const aiClient = provider === "copilot"
+        ? new AIClientCopilot(selectedModel)
+        : new AIClientCodex(selectedModel);
       let allToolEntries: ToolEntry[] = [];
       const taskToolEntry = createTaskToolEntry(aiClient, () => allToolEntries);
       allToolEntries = [...baseToolEntries, taskToolEntry];
@@ -283,7 +374,7 @@ function App() {
       }
       setLoading(false);
     },
-    [loading, exit, selectedModel, runCommand],
+    [loading, exit, selectedModel, provider, runCommand],
   );
 
   // Build model selector items
@@ -336,6 +427,13 @@ function App() {
         </Box>
       )}
 
+      {mode.kind === "provider" && (
+        <Box flexDirection="column">
+          <Text bold dimColor>Select a provider:</Text>
+          <SelectInput items={PROVIDER_ITEMS} onSelect={handleProviderSelect} />
+        </Box>
+      )}
+
       {mode.kind === "chat" && (
         <Box>
           <Text bold color="cyan">
@@ -348,7 +446,7 @@ function App() {
             placeholder={
               loading
                 ? "waiting..."
-                : `[${selectedModel}] Ask something... (/ for commands)`
+                : `[${provider}:${selectedModel}] Ask something... (/ for commands)`
             }
           />
         </Box>
