@@ -37,7 +37,12 @@ export function getCopilotToken(): string {
   if (!existsSync(AUTH_FILE)) {
     throw new Error("Not logged in to Copilot. Run /login to authenticate.");
   }
-  const auth = JSON.parse(readFileSync(AUTH_FILE, "utf-8"));
+  let auth: any;
+  try {
+    auth = JSON.parse(readFileSync(AUTH_FILE, "utf-8"));
+  } catch {
+    throw new Error("Auth file is corrupt. Run /login to re-authenticate.");
+  }
   const token = auth?.access_token;
   if (!token) {
     throw new Error("No Copilot token found. Run /login to authenticate.");
@@ -78,7 +83,8 @@ export async function pollForToken(
   deviceCode: string,
   interval: number
 ): Promise<string> {
-  while (true) {
+  const deadline = Date.now() + 10 * 60 * 1000; // 10 minute timeout
+  while (Date.now() < deadline) {
     const res = await fetch(ACCESS_TOKEN_URL, {
       method: "POST",
       headers: {
@@ -123,4 +129,5 @@ export async function pollForToken(
 
     await new Promise((r) => setTimeout(r, interval * 1000 + POLL_SAFETY_MARGIN_MS));
   }
+  throw new Error("Login timed out after 10 minutes. Run /login to try again.");
 }

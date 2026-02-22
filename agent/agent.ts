@@ -109,6 +109,9 @@ class Agent {
       this.messages,
       this.toolDefinitions
     );
+    if (!response.choices?.length) {
+      return { answer: "Error: API returned no response", iterations: 0 };
+    }
     let choice = response.choices[0]!;
 
     let iterations = 0;
@@ -165,6 +168,9 @@ class Agent {
         this.messages,
         this.toolDefinitions
       );
+      if (!response.choices?.length) {
+        return { answer: "Error: API returned no response mid-loop", iterations };
+      }
       choice = response.choices[0]!;
     }
 

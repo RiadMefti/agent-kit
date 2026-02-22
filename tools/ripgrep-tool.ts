@@ -1,5 +1,4 @@
 import type { ToolDefinition } from "../client/types";
-import { $ } from "bun";
 
 export async function grep(
   pattern: string,
@@ -7,13 +6,26 @@ export async function grep(
   maxResults?: number
 ): Promise<string> {
   try {
-    const cmd = maxResults
-      ? `rg --line-number --max-count ${maxResults} ${pattern} ${path}`
-      : `rg --line-number ${pattern} ${path}`;
-    const result = await $`${{ raw: cmd }}`.quiet().text();
-    return result || "No matches found";
+    const args = ["--line-number"];
+    if (maxResults) args.push("--max-count", String(maxResults));
+    args.push("--", pattern, path);
+
+    const proc = Bun.spawn(["rg", ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const output = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+
+    if (exitCode === 1) return "No matches found";
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      return `Error: ${stderr || `rg exited with code ${exitCode}`}`;
+    }
+    return output || "No matches found";
   } catch (e) {
-    return "No matches found";
+    if (String(e).includes("ENOENT")) return "Error: rg (ripgrep) is not installed";
+    return `Error: ${String(e)}`;
   }
 }
 

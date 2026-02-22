@@ -22,8 +22,12 @@ function ensureTodoFile(): void {
 
 function loadTodos(): Todo[] {
   ensureTodoFile();
-  const raw = readFileSync(TODO_FILE, "utf-8");
-  return JSON.parse(raw) as Todo[];
+  try {
+    const raw = readFileSync(TODO_FILE, "utf-8");
+    return JSON.parse(raw) as Todo[];
+  } catch {
+    return [];
+  }
 }
 
 function saveTodos(todos: Todo[]): void {

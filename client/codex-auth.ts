@@ -24,7 +24,12 @@ export function getAccessToken(): string {
   if (!existsSync(AUTH_FILE)) {
     throw new Error("Not logged in. Run /login to authenticate.");
   }
-  const auth = JSON.parse(readFileSync(AUTH_FILE, "utf-8"));
+  let auth: any;
+  try {
+    auth = JSON.parse(readFileSync(AUTH_FILE, "utf-8"));
+  } catch {
+    throw new Error("Auth file is corrupt. Run /login to re-authenticate.");
+  }
   const token = auth?.tokens?.access_token;
   if (!token) {
     throw new Error("No access token found. Run /login to authenticate.");
