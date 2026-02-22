@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { render, Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import SelectInput from "ink-select-input";
@@ -8,7 +8,7 @@ import AIClientCopilot from "./client/ai-client-copilot";
 import Agent from "./agent/agent";
 import { baseToolEntries } from "./tools";
 import { createTaskToolEntry } from "./tools/task-tool";
-import type { ToolEntry, ToolCallEvent } from "./client/types";
+import type { ToolEntry, ToolCallEvent, ApprovalDecision, ApprovalRequest, ApprovalHandler } from "./client/types";
 import {
   extractTokenInfo,
   isTokenExpired,
@@ -34,7 +34,8 @@ type InputMode =
   | { kind: "chat" }
   | { kind: "command" }
   | { kind: "model"; models: { slug: string; display_name: string; description: string }[] }
-  | { kind: "provider" };
+  | { kind: "provider" }
+  | { kind: "approval"; request: ApprovalRequest; resolve: (d: ApprovalDecision) => void };
 
 const COMMAND_ITEMS = [
   { label: "/models    - List and select a model", value: "/models" },
@@ -108,6 +109,38 @@ function Message({ entry, model }: { entry: ChatEntry; model?: string }) {
   );
 }
 
+const APPROVAL_ITEMS = [
+  { label: "Allow once", value: "allow_once" },
+  { label: "Allow always (this session)", value: "allow_always" },
+  { label: "Deny once", value: "deny_once" },
+  { label: "Deny always (this session)", value: "deny_always" },
+];
+
+function ApprovalPrompt({
+  request,
+  onDecide,
+}: {
+  request: ApprovalRequest;
+  onDecide: (d: ApprovalDecision) => void;
+}) {
+  const argsStr = formatArgs(request.args);
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
+      <Box marginBottom={1}>
+        <Text bold color="yellow">⚠ Tool Approval Required</Text>
+      </Box>
+      <Box marginBottom={1}>
+        <Text bold>{request.name}</Text>
+        {argsStr ? <Text dimColor>{"  "}{argsStr}</Text> : null}
+      </Box>
+      <SelectInput
+        items={APPROVAL_ITEMS}
+        onSelect={(item) => onDecide(item.value as ApprovalDecision)}
+      />
+    </Box>
+  );
+}
+
 function useTerminalSize() {
   const { stdout } = useStdout();
   const [size, setSize] = useState({
@@ -136,6 +169,10 @@ function App() {
   const [provider, setProvider] = useState<Provider>("codex");
   const [mode, setMode] = useState<InputMode>({ kind: "chat" });
 
+  const sessionAllowed = useRef(new Set<string>());
+  const sessionDenied = useRef(new Set<string>());
+  const approvalQueueRef = useRef<Promise<void>>(Promise.resolve());
+
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") exit();
     if (mode.kind === "command" && key.escape) {
@@ -145,6 +182,10 @@ function App() {
       setMode({ kind: "chat" });
     }
     if (mode.kind === "provider" && key.escape) {
+      setMode({ kind: "chat" });
+    }
+    if (mode.kind === "approval" && key.escape) {
+      mode.resolve("deny_once");
       setMode({ kind: "chat" });
     }
   });
@@ -318,6 +359,33 @@ function App() {
     [],
   );
 
+  const handleApprovalNeeded: ApprovalHandler = useCallback((request) => {
+    if (sessionAllowed.current.has(request.name))
+      return Promise.resolve("allow_always" as ApprovalDecision);
+    if (sessionDenied.current.has(request.name))
+      return Promise.resolve("deny_always" as ApprovalDecision);
+
+    let outerResolve!: (d: ApprovalDecision) => void;
+    const resultPromise = new Promise<ApprovalDecision>((res) => { outerResolve = res; });
+
+    approvalQueueRef.current = approvalQueueRef.current.then(
+      () => new Promise<void>((done) => {
+        setMode({
+          kind: "approval",
+          request,
+          resolve: (decision) => {
+            if (decision === "allow_always") sessionAllowed.current.add(request.name);
+            if (decision === "deny_always") sessionDenied.current.add(request.name);
+            outerResolve(decision);
+            done();
+          },
+        });
+      })
+    );
+
+    return resultPromise;
+  }, []);
+
   const handleSubmit = useCallback(
     async (value: string) => {
       const trimmed = value.trim();
@@ -353,6 +421,8 @@ function App() {
           const argsStr = formatArgs(event.args);
           const detail = argsStr ? `(${argsStr})` : "";
           addEntry({ type: "tool", content: `▶ ${event.name} ${detail}` });
+        } else if (event.status === "denied") {
+          addEntry({ type: "tool", content: `✗ ${event.name} denied` });
         } else {
           const time = event.duration
             ? `${(event.duration / 1000).toFixed(1)}s`
@@ -364,6 +434,7 @@ function App() {
       const agent = new Agent(aiClient, allToolEntries, {
         label: "agent",
         onToolCall,
+        onApprovalNeeded: handleApprovalNeeded,
       });
 
       try {
@@ -432,6 +503,16 @@ function App() {
           <Text bold dimColor>Select a provider:</Text>
           <SelectInput items={PROVIDER_ITEMS} onSelect={handleProviderSelect} />
         </Box>
+      )}
+
+      {mode.kind === "approval" && (
+        <ApprovalPrompt
+          request={mode.request}
+          onDecide={(decision) => {
+            mode.resolve(decision);
+            setMode({ kind: "chat" });
+          }}
+        />
       )}
 
       {mode.kind === "chat" && (

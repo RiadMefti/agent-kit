@@ -87,10 +87,24 @@ export interface IAIClient {
 
 export type ToolHandler = (args: unknown) => Promise<unknown>;
 
+export type ApprovalDecision =
+  | "allow_once"
+  | "allow_always"
+  | "deny_once"
+  | "deny_always";
+
+export interface ApprovalRequest {
+  toolCallId: string;
+  name: string;
+  args: unknown;
+}
+
+export type ApprovalHandler = (req: ApprovalRequest) => Promise<ApprovalDecision>;
+
 export interface ToolCallEvent {
   name: string;
   args: unknown;
-  status: "started" | "completed";
+  status: "started" | "completed" | "denied";
   result?: string;
   duration?: number;
 }

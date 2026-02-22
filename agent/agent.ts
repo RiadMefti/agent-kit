@@ -4,6 +4,7 @@ import type {
   ToolEntry,
   ToolHandler,
   ToolCallEvent,
+  ApprovalHandler,
 } from "../client/types";
 
 export interface AgentOptions {
@@ -11,6 +12,7 @@ export interface AgentOptions {
   systemPrompt?: string;
   label?: string;
   onToolCall?: (event: ToolCallEvent) => void;
+  onApprovalNeeded?: ApprovalHandler;
 }
 
 export interface AgentResult {
@@ -27,6 +29,7 @@ class Agent {
   private systemPrompt: string;
   private label: string;
   private onToolCall?: (event: ToolCallEvent) => void;
+  private onApprovalNeeded?: ApprovalHandler;
   private messages: ChatMessage[] = [];
   private toolHandlers: Record<string, ToolHandler>;
   private toolDefinitions: ToolEntry["definition"][];
@@ -41,6 +44,7 @@ class Agent {
     this.systemPrompt = options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     this.label = options?.label ?? "agent";
     this.onToolCall = options?.onToolCall;
+    this.onApprovalNeeded = options?.onApprovalNeeded;
 
     this.toolHandlers = {};
     this.toolDefinitions = [];
@@ -53,6 +57,17 @@ class Agent {
 
   getToolDefinitions(): ToolEntry["definition"][] {
     return this.toolDefinitions;
+  }
+
+  private async requestApproval(
+    toolCallId: string,
+    name: string,
+    args: unknown
+  ): Promise<"proceed" | "denied"> {
+    const SAFE_TOOLS = new Set(["read", "glob", "grep", "web_fetch", "todo_read"]);
+    if (SAFE_TOOLS.has(name) || !this.onApprovalNeeded) return "proceed";
+    const decision = await this.onApprovalNeeded({ toolCallId, name, args });
+    return decision === "allow_once" || decision === "allow_always" ? "proceed" : "denied";
   }
 
   private async handleToolCall(
@@ -106,6 +121,15 @@ class Agent {
           } catch {
             parsedArgs = toolCall.function.arguments;
           }
+          const approval = await this.requestApproval(toolCall.id, name, parsedArgs);
+          if (approval === "denied") {
+            this.onToolCall?.({ name, args: parsedArgs, status: "denied" });
+            return {
+              tool_call_id: toolCall.id,
+              content: JSON.stringify({ error: `Tool '${name}' was denied by the user.` }),
+            };
+          }
+
           this.onToolCall?.({ name, args: parsedArgs, status: "started" });
           const start = Date.now();
           const content = await this.handleToolCall(
