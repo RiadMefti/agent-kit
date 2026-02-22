@@ -1,20 +1,18 @@
 import { join } from "path";
 import { mkdir, readdir, rm } from "fs/promises";
+import type { ChatEntry } from "./components/Message";
 
 const SESSIONS_DIR = join(process.cwd(), ".agent-kit", "sessions");
 const MAX_SESSIONS = 20;
 
-export interface SessionEntry {
-  type: "user" | "assistant" | "tool" | "system";
-  content: string;
-}
+export type SessionEntry = ChatEntry;
 
 export interface Session {
   id: string;
   timestamp: string;
   provider: string;
   model: string;
-  entries: SessionEntry[];
+  entries: ChatEntry[];
 }
 
 async function ensureDir() {
