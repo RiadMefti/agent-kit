@@ -8,7 +8,7 @@ import AIClientCopilot from "./client/ai-client-copilot";
 import Agent from "./agent/agent";
 import { baseToolEntries } from "./tools";
 import { createTaskToolEntry } from "./tools/task-tool";
-import type { ToolEntry, ToolCallEvent, ApprovalDecision, ApprovalRequest, ApprovalHandler } from "./client/types";
+import type { ToolEntry, ToolCallEvent, ApprovalDecision, ApprovalRequest, ApprovalHandler, ChatMessage } from "./client/types";
 import {
   extractTokenInfo,
   isTokenExpired,
@@ -22,6 +22,7 @@ import {
   pollForToken,
   getCopilotToken,
 } from "./client/copilot-auth";
+import { saveSession, listSessions, formatSessionLabel, type Session } from "./sessions";
 
 interface ChatEntry {
   type: "user" | "assistant" | "tool" | "system";
@@ -35,14 +36,15 @@ type InputMode =
   | { kind: "command" }
   | { kind: "model"; models: { slug: string; display_name: string; description: string }[] }
   | { kind: "provider" }
-  | { kind: "approval"; request: ApprovalRequest; resolve: (d: ApprovalDecision) => void };
+  | { kind: "approval"; request: ApprovalRequest; resolve: (d: ApprovalDecision) => void }
+  | { kind: "sessions"; sessions: Session[] };
 
-const COMMAND_ITEMS = [
-  { label: "/models    - List and select a model", value: "/models" },
-  { label: "/provider  - Switch AI provider", value: "/provider" },
-  { label: "/login     - Login to current provider", value: "/login" },
-  { label: "/status    - Show auth & model status", value: "/status" },
-  { label: "cancel", value: "__cancel__" },
+const COMMANDS = [
+  { value: "/models", desc: "List and select a model" },
+  { value: "/provider", desc: "Switch AI provider" },
+  { value: "/login", desc: "Login to current provider" },
+  { value: "/status", desc: "Show auth & model status" },
+  { value: "/sessions", desc: "Browse and resume past sessions" },
 ];
 
 const PROVIDER_ITEMS = [
@@ -111,10 +113,12 @@ function Message({ entry, model }: { entry: ChatEntry; model?: string }) {
 
 const APPROVAL_ITEMS = [
   { label: "Allow once", value: "allow_once" },
-  { label: "Allow always (this session)", value: "allow_always" },
+  { label: "Allow always", value: "allow_always" },
   { label: "Deny once", value: "deny_once" },
-  { label: "Deny always (this session)", value: "deny_always" },
+  { label: "Deny always", value: "deny_always" },
 ];
+
+const APPROVAL_HEIGHT = 9; // header(1) + tool name(1) + 4 items + border(2) + padding(1)
 
 function ApprovalPrompt({
   request,
@@ -136,6 +140,81 @@ function ApprovalPrompt({
       <SelectInput
         items={APPROVAL_ITEMS}
         onSelect={(item) => onDecide(item.value as ApprovalDecision)}
+      />
+    </Box>
+  );
+}
+
+function CommandPalette({
+  input,
+  onInputChange,
+  onSelect,
+}: {
+  input: string;
+  onInputChange: (value: string) => void;
+  onSelect: (cmd: string) => void;
+}) {
+  const filter = input.slice(1).toLowerCase();
+  const matches = COMMANDS.filter((c) => c.value.slice(1).startsWith(filter));
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => { setIdx(0); }, [filter]);
+
+  const clamped = Math.min(idx, Math.max(0, matches.length - 1));
+
+  useInput((_ch, key) => {
+    if (key.upArrow) setIdx((i) => Math.max(0, i - 1));
+    if (key.downArrow) setIdx((i) => Math.min(matches.length - 1, i + 1));
+  });
+
+  const handleSubmit = () => {
+    if (matches.length > 0) {
+      onSelect(matches[clamped]!.value);
+    }
+  };
+
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      <Box>
+        <Text bold color="cyan">{"❯ "}</Text>
+        <TextInput value={input} onChange={onInputChange} onSubmit={handleSubmit} />
+      </Box>
+      {matches.map((cmd, i) => (
+        <Box key={cmd.value} marginLeft={2}>
+          <Text color={i === clamped ? "cyan" : undefined} bold={i === clamped}>
+            {i === clamped ? "❯ " : "  "}{cmd.value}
+          </Text>
+          <Text dimColor>{"  "}{cmd.desc}</Text>
+        </Box>
+      ))}
+      {matches.length === 0 && (
+        <Box marginLeft={2}><Text dimColor>No matching commands</Text></Box>
+      )}
+    </Box>
+  );
+}
+
+function SessionsPicker({
+  sessions,
+  onSelect,
+}: {
+  sessions: Session[];
+  onSelect: (s: Session | null) => void;
+}) {
+  const items = [
+    ...sessions.map((s) => ({ label: formatSessionLabel(s), value: s.id })),
+    { label: "cancel", value: "__cancel__" },
+  ];
+  return (
+    <Box flexDirection="column">
+      <Text bold dimColor>Resume a session:</Text>
+      <SelectInput
+        items={items}
+        onSelect={(item) => {
+          if (item.value === "__cancel__") { onSelect(null); return; }
+          const session = sessions.find((s) => s.id === item.value) ?? null;
+          onSelect(session);
+        }}
       />
     </Box>
   );
@@ -172,6 +251,30 @@ function App() {
   const sessionAllowed = useRef(new Set<string>());
   const sessionDenied = useRef(new Set<string>());
   const approvalQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const sessionTimestamp = useRef<string>("");
+  const sessionId = useRef<string>("");
+  const conversationHistoryRef = useRef<ChatMessage[]>([]);
+  const prevLoadingRef = useRef(false);
+
+  // Auto-save session when agent finishes (loading: true -> false)
+  useEffect(() => {
+    if (prevLoadingRef.current && !loading && entries.length > 0) {
+      // Set timestamp on first save (first real interaction)
+      if (sessionTimestamp.current === "") {
+        const now = new Date().toISOString();
+        sessionTimestamp.current = now;
+        sessionId.current = now.replace(/[:.]/g, "-");
+      }
+      saveSession({
+        id: sessionId.current,
+        timestamp: sessionTimestamp.current,
+        provider,
+        model: selectedModel,
+        entries: entries.filter((e) => e.type !== "system"),
+      });
+    }
+    prevLoadingRef.current = loading;
+  }, [loading, entries, provider, selectedModel]);
 
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") exit();
@@ -188,6 +291,9 @@ function App() {
       mode.resolve("deny_once");
       setMode({ kind: "chat" });
     }
+    if (mode.kind === "sessions" && key.escape) {
+      setMode({ kind: "chat" });
+    }
   });
 
   const addEntry = (entry: ChatEntry) => {
@@ -195,9 +301,18 @@ function App() {
   };
 
   const handleInputChange = (value: string) => {
-    if (value === "/" && mode.kind === "chat") {
-      setInput("");
+    if (value.startsWith("/") && mode.kind === "chat") {
+      setInput(value);
       setMode({ kind: "command" });
+      return;
+    }
+    if (mode.kind === "command") {
+      if (!value.startsWith("/")) {
+        setInput("");
+        setMode({ kind: "chat" });
+        return;
+      }
+      setInput(value);
       return;
     }
     setInput(value);
@@ -314,20 +429,20 @@ function App() {
         setMode({ kind: "provider" });
         return;
       }
-    },
-    [selectedModel, provider],
-  );
 
-  const handleCommandSelect = useCallback(
-    (item: { value: string }) => {
-      if (item.value === "__cancel__") {
-        setMode({ kind: "chat" });
+      if (cmd === "/sessions") {
+        const sessions = await listSessions();
+        if (sessions.length === 0) {
+          addEntry({ type: "system", content: "No saved sessions found." });
+          return;
+        }
+        setMode({ kind: "sessions", sessions });
         return;
       }
-      setMode({ kind: "chat" });
-      runCommand(item.value);
+
+      addEntry({ type: "system", content: `Unknown command: ${cmd}` });
     },
-    [runCommand],
+    [selectedModel, provider],
   );
 
   const handleModelSelect = useCallback(
@@ -401,7 +516,24 @@ function App() {
 
       if (trimmed.startsWith("/")) {
         setInput("");
-        await runCommand(trimmed);
+        setMode({ kind: "chat" });
+
+        const filter = trimmed.toLowerCase();
+        const exact = COMMANDS.find((c) => c.value === filter);
+        if (exact) {
+          await runCommand(exact.value);
+          return;
+        }
+        const matches = COMMANDS.filter((c) => c.value.startsWith(filter));
+        if (matches.length === 1) {
+          await runCommand(matches[0]!.value);
+          return;
+        }
+        if (matches.length > 1) {
+          addEntry({ type: "system", content: `Ambiguous: ${matches.map((m) => m.value).join(", ")}` });
+          return;
+        }
+        addEntry({ type: "system", content: `Unknown command: ${trimmed}` });
         return;
       }
 
@@ -435,11 +567,17 @@ function App() {
         label: "agent",
         onToolCall,
         onApprovalNeeded: handleApprovalNeeded,
+        conversationHistory: conversationHistoryRef.current,
       });
 
       try {
         const result = await agent.run(trimmed);
         addEntry({ type: "assistant", content: result.answer });
+        conversationHistoryRef.current = [
+          ...conversationHistoryRef.current,
+          { role: "user", content: trimmed },
+          { role: "assistant", content: result.answer },
+        ];
       } catch (e) {
         addEntry({ type: "assistant", content: `Error: ${String(e)}` });
       }
@@ -460,6 +598,17 @@ function App() {
         ]
       : [];
 
+  // Calculate exact heights to avoid Ink overflow bugs
+  const bottomPanelHeight =
+    mode.kind === "approval" ? APPROVAL_HEIGHT
+    : mode.kind === "command" ? COMMANDS.length + 1
+    : mode.kind === "sessions" ? Math.min((mode.sessions?.length ?? 0) + 2, 12)
+    : mode.kind === "model" ? Math.min(modelItems.length + 1, 12)
+    : mode.kind === "provider" ? PROVIDER_ITEMS.length + 1
+    : 1;
+  const messagesHeight = Math.max(4, rows - 4 - bottomPanelHeight);
+  const maxEntries = Math.max(3, Math.floor(messagesHeight / 3));
+
   return (
     <Box flexDirection="column" width={columns} height={rows} padding={1}>
       <Box marginBottom={1}>
@@ -469,13 +618,13 @@ function App() {
         <Text dimColor> — type a message, "/" for commands, "exit" to quit</Text>
       </Box>
 
-      <Box flexDirection="column" flexGrow={1} overflow="hidden">
-        {entries.map((entry, i) => (
+      <Box flexDirection="column" height={messagesHeight} overflow="hidden">
+        {entries.slice(-maxEntries).map((entry, i) => (
           <Message key={i} entry={entry} model={selectedModel} />
         ))}
 
         {loading && (
-          <Box marginBottom={1}>
+          <Box>
             <Text color="yellow">
               <Spinner type="dots" />{" "}
             </Text>
@@ -485,38 +634,72 @@ function App() {
       </Box>
 
       {mode.kind === "command" && (
-        <Box flexDirection="column">
-          <Text bold dimColor>Select a command:</Text>
-          <SelectInput items={COMMAND_ITEMS} onSelect={handleCommandSelect} />
-        </Box>
+        <CommandPalette
+          input={input}
+          onInputChange={handleInputChange}
+          onSelect={(cmd) => {
+            setInput("");
+            setMode({ kind: "chat" });
+            runCommand(cmd);
+          }}
+        />
       )}
 
       {mode.kind === "model" && (
-        <Box flexDirection="column">
+        <Box flexDirection="column" flexShrink={0}>
           <Text bold dimColor>Select a model:</Text>
           <SelectInput items={modelItems} onSelect={handleModelSelect} />
         </Box>
       )}
 
       {mode.kind === "provider" && (
-        <Box flexDirection="column">
+        <Box flexDirection="column" flexShrink={0}>
           <Text bold dimColor>Select a provider:</Text>
           <SelectInput items={PROVIDER_ITEMS} onSelect={handleProviderSelect} />
         </Box>
       )}
 
+      {mode.kind === "sessions" && (
+        <Box flexShrink={0}>
+          <SessionsPicker
+            sessions={mode.sessions}
+            onSelect={(session) => {
+              if (session) {
+                setEntries(session.entries as typeof entries);
+                sessionTimestamp.current = session.timestamp;
+                sessionId.current = session.id;
+                setProvider(session.provider as Provider);
+                setSelectedModel(session.model);
+                sessionAllowed.current.clear();
+                sessionDenied.current.clear();
+                conversationHistoryRef.current = session.entries
+                  .filter((e) => e.type === "user" || e.type === "assistant")
+                  .map((e) => ({
+                    role: e.type as "user" | "assistant",
+                    content: e.content,
+                  }));
+                addEntry({ type: "system", content: `Resumed session (${session.provider}:${session.model})` });
+              }
+              setMode({ kind: "chat" });
+            }}
+          />
+        </Box>
+      )}
+
       {mode.kind === "approval" && (
-        <ApprovalPrompt
-          request={mode.request}
-          onDecide={(decision) => {
-            mode.resolve(decision);
-            setMode({ kind: "chat" });
-          }}
-        />
+        <Box flexShrink={0}>
+          <ApprovalPrompt
+            request={mode.request}
+            onDecide={(decision) => {
+              mode.resolve(decision);
+              setMode({ kind: "chat" });
+            }}
+          />
+        </Box>
       )}
 
       {mode.kind === "chat" && (
-        <Box>
+        <Box flexShrink={0}>
           <Text bold color="cyan">
             {"❯ "}
           </Text>

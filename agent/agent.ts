@@ -13,6 +13,7 @@ export interface AgentOptions {
   label?: string;
   onToolCall?: (event: ToolCallEvent) => void;
   onApprovalNeeded?: ApprovalHandler;
+  conversationHistory?: ChatMessage[];
 }
 
 export interface AgentResult {
@@ -20,8 +21,15 @@ export interface AgentResult {
   iterations: number;
 }
 
-const DEFAULT_SYSTEM_PROMPT =
-  "You are a helpful coding assistant. Use the tools available to you to complete the user's request.";
+const DEFAULT_SYSTEM_PROMPT = `You are a helpful coding assistant running inside a terminal. You have tools to read files, search code, run shell commands, fetch URLs, and more.
+
+IMPORTANT: Never ask the user to share or paste code. Always use your tools to find information yourself:
+- Use glob to explore the project structure
+- Use read to inspect files
+- Use grep to search for patterns
+- Use bash to run commands
+
+When asked about a repo or codebase, immediately start exploring with your tools — do not ask for clarification first. Act, then report what you found.`;
 
 class Agent {
   private aiClient: IAIClient;
@@ -30,6 +38,7 @@ class Agent {
   private label: string;
   private onToolCall?: (event: ToolCallEvent) => void;
   private onApprovalNeeded?: ApprovalHandler;
+  private conversationHistory: ChatMessage[];
   private messages: ChatMessage[] = [];
   private toolHandlers: Record<string, ToolHandler>;
   private toolDefinitions: ToolEntry["definition"][];
@@ -45,6 +54,7 @@ class Agent {
     this.label = options?.label ?? "agent";
     this.onToolCall = options?.onToolCall;
     this.onApprovalNeeded = options?.onApprovalNeeded;
+    this.conversationHistory = options?.conversationHistory ?? [];
 
     this.toolHandlers = {};
     this.toolDefinitions = [];
@@ -91,6 +101,7 @@ class Agent {
   async run(prompt: string): Promise<AgentResult> {
     this.messages = [
       { role: "system", content: this.systemPrompt },
+      ...this.conversationHistory,
       { role: "user", content: prompt },
     ];
 
