@@ -7,7 +7,7 @@ import Agent from "./agent/agent";
 import { baseToolEntries } from "./tools";
 import { createTaskToolEntry } from "./tools/task-tool";
 import type { ToolEntry, ToolCallEvent, ApprovalDecision, ApprovalRequest, ChatMessage } from "./client/types";
-import { PROVIDERS } from "./client/providers";
+import { PROVIDERS, getContextWindow } from "./client/providers";
 import { listSessions, type Session } from "./sessions";
 import { Message, type ChatEntry } from "./components/Message";
 import { ApprovalPrompt, APPROVAL_HEIGHT, formatArgs } from "./components/ApprovalPrompt";
@@ -53,7 +53,7 @@ function App() {
 
   const { handleApprovalNeeded, clearApprovalCache } = useApproval(setMode);
   const { conversationHistoryRef, resumeSession } = useSession(entries, loading, provider, selectedModel);
-  const { addUsage, pruneHistory, formatTokenDisplay, resetTokens, isWarning } = useContextManager(selectedModel);
+  const { addUsage, pruneHistory, formatTokenDisplay, resetTokens, isWarning, utilization } = useContextManager(selectedModel);
 
   const streamingIndexRef = useRef<number>(-1);
 
@@ -223,13 +223,13 @@ function App() {
       }
 
       setInput("");
-      addEntry({ type: "user", content: trimmed });
+      addEntry({ type: "user", content: trimmed, promptTokens: undefined, contextPercent: undefined });
       setLoading(true);
 
       // Create empty streaming entry
       setEntries((prev) => {
         streamingIndexRef.current = prev.length;
-        return [...prev, { type: "assistant", content: "" }];
+        return [...prev, { type: "assistant", content: "", streaming: true }];
       });
 
       // Prune conversation history if needed
@@ -280,7 +280,7 @@ function App() {
           throttleTimer = setTimeout(() => {
             throttleTimer = null;
             flushStream();
-          }, 50);
+          }, 100);
         }
       };
 
@@ -294,7 +294,10 @@ function App() {
 
       try {
         const result = await agent.run(trimmed);
-        // Final flush and overwrite with complete answer
+        const promptTokens = result.usage?.promptTokens;
+        const contextPercent = promptTokens != null ? (promptTokens / getContextWindow(selectedModel)) * 100 : undefined;
+
+        // Final flush and overwrite with complete answer (streaming off → triggers MarkdownText)
         if (throttleTimer) {
           clearTimeout(throttleTimer);
           throttleTimer = null;
@@ -304,7 +307,13 @@ function App() {
           setEntries((prev) => {
             const updated = [...prev];
             if (updated[idx]) {
-              updated[idx] = { ...updated[idx], content: result.answer };
+              updated[idx] = {
+                type: "assistant",
+                content: result.answer,
+                streaming: false,
+                promptTokens,
+                contextPercent,
+              };
             }
             return updated;
           });
@@ -318,12 +327,16 @@ function App() {
           { role: "assistant", content: result.answer },
         ];
       } catch (e) {
+        if (throttleTimer) {
+          clearTimeout(throttleTimer);
+          throttleTimer = null;
+        }
         const idx = streamingIndexRef.current;
         if (idx >= 0) {
           setEntries((prev) => {
             const updated = [...prev];
             if (updated[idx]) {
-              updated[idx] = { ...updated[idx], content: `Error: ${String(e)}` };
+              updated[idx] = { type: "assistant", content: `Error: ${String(e)}`, streaming: false };
             }
             return updated;
           });

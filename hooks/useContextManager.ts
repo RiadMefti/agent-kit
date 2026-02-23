@@ -2,6 +2,32 @@ import { useState, useCallback, useRef } from "react";
 import type { ChatMessage, TokenUsage } from "../client/types";
 import { getContextWindow } from "../client/providers";
 
+function summarizeMessage(message: ChatMessage): string {
+  if (message.role === "tool") {
+    const content = message.content.length > 120
+      ? `${message.content.slice(0, 120)}...`
+      : message.content;
+    return `- tool(${message.tool_call_id}): ${content}`;
+  }
+
+  const content = (message.content ?? "").replace(/\s+/g, " ").trim();
+  const clipped = content.length > 180 ? `${content.slice(0, 180)}...` : content;
+  return `- ${message.role}: ${clipped || "(empty)"}`;
+}
+
+function buildCompactionSummary(messages: ChatMessage[]): ChatMessage | null {
+  if (messages.length === 0) return null;
+
+  const lines = messages.map(summarizeMessage);
+  return {
+    role: "system",
+    content: [
+      "Context compaction summary of earlier conversation (preserve these facts and decisions):",
+      ...lines,
+    ].join("\n"),
+  };
+}
+
 export function useContextManager(model: string) {
   const [totalUsage, setTotalUsage] = useState<TokenUsage>({
     promptTokens: 0,
@@ -33,11 +59,15 @@ export function useContextManager(model: string) {
     (history: ChatMessage[]): ChatMessage[] => {
       if (totalUsage.promptTokens < contextWindow * 0.8) return history;
 
-      // Keep system prompt (first element if present) + last 4 exchanges (8 messages)
       const systemMessages = history.filter((m) => m.role === "system");
       const nonSystem = history.filter((m) => m.role !== "system");
       const kept = nonSystem.slice(-8);
-      return [...systemMessages, ...kept];
+      const removed = nonSystem.slice(0, Math.max(0, nonSystem.length - kept.length));
+      const summary = buildCompactionSummary(removed);
+
+      return summary
+        ? [...systemMessages, summary, ...kept]
+        : [...systemMessages, ...kept];
     },
     [totalUsage.promptTokens, contextWindow]
   );

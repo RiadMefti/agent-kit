@@ -69,7 +69,7 @@ export const todoReadTool: ToolDefinition = {
   function: {
     name: "todo_read",
     description:
-      "Read the current todo list. Returns all todos with their id, content, status, and priority. Use this to check progress and plan next steps.",
+      "Read the persistent todo list from disk. Only use this for long multi-session projects that need persistent task tracking. Do NOT use for normal requests.",
     strict: true,
     parameters: {
       type: "object",
@@ -85,7 +85,7 @@ export const todoWriteTool: ToolDefinition = {
   function: {
     name: "todo_write",
     description:
-      "Write/replace the entire todo list. Pass the full list of todos each time — this overwrites the previous list. Use this to create, update status, re-prioritize, or remove todos. Each todo has a content (description), status (pending | in_progress | completed | cancelled), and priority (high | medium | low).",
+      "Write/replace the persistent todo list on disk. Only use for long multi-session projects needing persistent tracking. Do NOT use for normal requests — just do the work directly instead of planning it.",
     strict: true,
     parameters: {
       type: "object",

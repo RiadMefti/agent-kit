@@ -1,3 +1,6 @@
+import { execSync } from "child_process";
+import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { join, basename } from "path";
 import type {
   IAIClient,
   ChatMessage,
@@ -25,15 +28,84 @@ export interface AgentResult {
   usage?: TokenUsage;
 }
 
-const DEFAULT_SYSTEM_PROMPT = `You are a helpful coding assistant running inside a terminal. You have tools to read files, search code, run shell commands, fetch URLs, and more.
+function getShallowTree(dir: string, depth = 2, prefix = ""): string[] {
+  const lines: string[] = [];
+  try {
+    const entries = readdirSync(dir)
+      .filter((e) => !e.startsWith(".") && e !== "node_modules" && e !== "dist" && e !== "build")
+      .sort();
+    for (const entry of entries) {
+      const full = join(dir, entry);
+      let isDir = false;
+      try { isDir = statSync(full).isDirectory(); } catch { continue; }
+      lines.push(`${prefix}${isDir ? entry + "/" : entry}`);
+      if (isDir && depth > 1) {
+        lines.push(...getShallowTree(full, depth - 1, prefix + "  "));
+      }
+    }
+  } catch {}
+  return lines;
+}
 
-IMPORTANT: Never ask the user to share or paste code. Always use your tools to find information yourself:
-- Use glob to explore the project structure
-- Use read to inspect files
-- Use grep to search for patterns
-- Use bash to run commands
+function buildWorkspaceContext(cwd: string): string {
+  const parts: string[] = [];
 
-When asked about a repo or codebase, immediately start exploring with your tools — do not ask for clarification first. Act, then report what you found.`;
+  parts.push(`Working directory: ${cwd}`);
+
+  // Git info
+  try {
+    const branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd, stdio: ["pipe", "pipe", "pipe"] }).toString().trim();
+    parts.push(`Git branch: ${branch}`);
+    try {
+      const remote = execSync("git remote get-url origin", { cwd, stdio: ["pipe", "pipe", "pipe"] }).toString().trim();
+      parts.push(`Git remote: ${remote}`);
+    } catch {}
+  } catch {
+    parts.push("Git: not a git repository");
+  }
+
+  // Package info
+  const pkgPath = join(cwd, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      const info = [`Project: ${pkg.name || basename(cwd)}`];
+      if (pkg.description) info.push(`Description: ${pkg.description}`);
+      const deps = Object.keys(pkg.dependencies || {});
+      const devDeps = Object.keys(pkg.devDependencies || {});
+      if (deps.length > 0) info.push(`Dependencies: ${deps.join(", ")}`);
+      if (devDeps.length > 0) info.push(`Dev dependencies: ${devDeps.join(", ")}`);
+      parts.push(info.join("\n"));
+    } catch {}
+  }
+
+  // File tree
+  const tree = getShallowTree(cwd);
+  if (tree.length > 0) {
+    parts.push(`File tree:\n${tree.join("\n")}`);
+  }
+
+  return parts.join("\n\n");
+}
+
+const SYSTEM_PROMPT_TEMPLATE = `You are a coding agent running in a terminal. You operate inside a workspace and have full access to it via your tools.
+
+WORKSPACE:
+{workspace}
+
+RULES — follow these strictly:
+1. ACT IMMEDIATELY. When the user asks you to do something, start doing it right away using your tools. Do not explain what you plan to do first. Do not create todo lists or plans. Just do the work.
+2. BE CONCISE. After completing work, briefly state what you did and what changed. No preamble, no bullet-point plans, no "I'll now proceed to..." — just results.
+3. USE TOOLS, NOT WORDS. Never ask the user to paste code or share files. Use glob, read, grep, bash to find what you need yourself.
+4. COMPLETE THE FULL TASK. Don't stop partway to ask "should I continue?" or "ready for the next step?". Finish the entire request, then report back.
+5. WRITE CODE DIRECTLY. When asked to implement something, read the relevant files, make the edits with write/edit, and confirm the changes. Don't describe the changes you would make — make them.
+6. All file paths should be relative to or absolute from the working directory shown above. You already know the project structure — use it.
+7. The todo_read/todo_write tools are ONLY for very long multi-session projects where you need persistent task tracking across separate conversations. Do NOT use them for normal requests.`;
+
+function buildSystemPrompt(cwd: string): string {
+  const ctx = buildWorkspaceContext(cwd);
+  return SYSTEM_PROMPT_TEMPLATE.replace("{workspace}", ctx);
+}
 
 class Agent {
   private aiClient: IAIClient;
@@ -55,7 +127,7 @@ class Agent {
   ) {
     this.aiClient = aiClient;
     this.maxIterations = options?.maxIterations ?? 30;
-    this.systemPrompt = options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+    this.systemPrompt = options?.systemPrompt ?? buildSystemPrompt(process.cwd());
     this.label = options?.label ?? "agent";
     this.onToolCall = options?.onToolCall;
     this.onApprovalNeeded = options?.onApprovalNeeded;
