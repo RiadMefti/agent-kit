@@ -5,6 +5,8 @@ import type {
   ToolHandler,
   ToolCallEvent,
   ApprovalHandler,
+  TokenUsage,
+  OnChunkCallback,
 } from "../client/types";
 
 export interface AgentOptions {
@@ -14,11 +16,13 @@ export interface AgentOptions {
   onToolCall?: (event: ToolCallEvent) => void;
   onApprovalNeeded?: ApprovalHandler;
   conversationHistory?: ChatMessage[];
+  onMessage?: OnChunkCallback;
 }
 
 export interface AgentResult {
   answer: string;
   iterations: number;
+  usage?: TokenUsage;
 }
 
 const DEFAULT_SYSTEM_PROMPT = `You are a helpful coding assistant running inside a terminal. You have tools to read files, search code, run shell commands, fetch URLs, and more.
@@ -38,6 +42,7 @@ class Agent {
   private label: string;
   private onToolCall?: (event: ToolCallEvent) => void;
   private onApprovalNeeded?: ApprovalHandler;
+  private onMessage?: OnChunkCallback;
   private conversationHistory: ChatMessage[];
   private messages: ChatMessage[] = [];
   private toolHandlers: Record<string, ToolHandler>;
@@ -54,6 +59,7 @@ class Agent {
     this.label = options?.label ?? "agent";
     this.onToolCall = options?.onToolCall;
     this.onApprovalNeeded = options?.onApprovalNeeded;
+    this.onMessage = options?.onMessage;
     this.conversationHistory = options?.conversationHistory ?? [];
 
     this.toolHandlers = {};
@@ -98,6 +104,16 @@ class Agent {
     }
   }
 
+  private accumulateUsage(
+    acc: TokenUsage,
+    raw?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  ): void {
+    if (!raw) return;
+    acc.promptTokens = raw.prompt_tokens;
+    acc.completionTokens += raw.completion_tokens;
+    acc.totalTokens += raw.total_tokens;
+  }
+
   async run(prompt: string): Promise<AgentResult> {
     this.messages = [
       { role: "system", content: this.systemPrompt },
@@ -105,12 +121,17 @@ class Agent {
       { role: "user", content: prompt },
     ];
 
+    const totalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
     let response = await this.aiClient.chatCompletion(
       this.messages,
-      this.toolDefinitions
+      this.toolDefinitions,
+      this.onMessage
     );
+    this.accumulateUsage(totalUsage, response.usage);
+
     if (!response.choices?.length) {
-      return { answer: "Error: API returned no response", iterations: 0 };
+      return { answer: "Error: API returned no response", iterations: 0, usage: totalUsage };
     }
     let choice = response.choices[0]!;
 
@@ -166,21 +187,25 @@ class Agent {
 
       response = await this.aiClient.chatCompletion(
         this.messages,
-        this.toolDefinitions
+        this.toolDefinitions,
+        this.onMessage
       );
+      this.accumulateUsage(totalUsage, response.usage);
+
       if (!response.choices?.length) {
-        return { answer: "Error: API returned no response mid-loop", iterations };
+        return { answer: "Error: API returned no response mid-loop", iterations, usage: totalUsage };
       }
       choice = response.choices[0]!;
     }
 
     if (iterations >= this.maxIterations) {
-      return { answer: "Error: Max iterations reached", iterations };
+      return { answer: "Error: Max iterations reached", iterations, usage: totalUsage };
     }
 
     return {
       answer: choice.message.content ?? "No response",
       iterations,
+      usage: totalUsage,
     };
   }
 }

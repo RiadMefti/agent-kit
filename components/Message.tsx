@@ -1,4 +1,5 @@
 import { Box, Text } from "ink";
+import { MarkdownText } from "./MarkdownText";
 
 export interface ChatEntry {
   type: "user" | "assistant" | "tool" | "system";
@@ -38,7 +39,7 @@ export function Message({ entry, model }: { entry: ChatEntry; model?: string }) 
         {`agent(${model ?? "unknown"}):`}
       </Text>
       <Box marginLeft={2}>
-        <Text wrap="wrap">{entry.content}</Text>
+        <MarkdownText content={entry.content} />
       </Box>
     </Box>
   );

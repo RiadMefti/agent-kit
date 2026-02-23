@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { render, Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import SelectInput from "ink-select-input";
@@ -16,6 +16,7 @@ import { SessionsPicker } from "./components/SessionsPicker";
 import { useTerminalSize } from "./hooks/useTerminalSize";
 import { useApproval } from "./hooks/useApproval";
 import { useSession } from "./hooks/useSession";
+import { useContextManager } from "./hooks/useContextManager";
 
 type Provider = "codex" | "copilot";
 
@@ -52,6 +53,9 @@ function App() {
 
   const { handleApprovalNeeded, clearApprovalCache } = useApproval(setMode);
   const { conversationHistoryRef, resumeSession } = useSession(entries, loading, provider, selectedModel);
+  const { addUsage, pruneHistory, formatTokenDisplay, resetTokens, isWarning } = useContextManager(selectedModel);
+
+  const streamingIndexRef = useRef<number>(-1);
 
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") exit();
@@ -158,10 +162,11 @@ function App() {
         return;
       }
       setSelectedModel(item.value);
+      resetTokens();
       setMode({ kind: "chat" });
       addEntry({ type: "system", content: `Model set to ${item.value}` });
     },
-    [],
+    [resetTokens],
   );
 
   const handleProviderSelect = useCallback(
@@ -174,10 +179,11 @@ function App() {
       setProvider(newProvider);
       const defaultModel = PROVIDERS[newProvider]!.defaultModel;
       setSelectedModel(defaultModel);
+      resetTokens();
       setMode({ kind: "chat" });
       addEntry({ type: "system", content: `Switched to ${newProvider} (model: ${defaultModel})` });
     },
-    [],
+    [resetTokens],
   );
 
   const handleSubmit = useCallback(
@@ -220,6 +226,16 @@ function App() {
       addEntry({ type: "user", content: trimmed });
       setLoading(true);
 
+      // Create empty streaming entry
+      setEntries((prev) => {
+        streamingIndexRef.current = prev.length;
+        return [...prev, { type: "assistant", content: "" }];
+      });
+
+      // Prune conversation history if needed
+      const prunedHistory = pruneHistory(conversationHistoryRef.current);
+      conversationHistoryRef.current = prunedHistory;
+
       const aiClient = PROVIDERS[provider]!.createClient(selectedModel);
       let allToolEntries: ToolEntry[] = [];
       const taskToolEntry = createTaskToolEntry(aiClient, () => allToolEntries);
@@ -240,27 +256,83 @@ function App() {
         }
       };
 
+      // Streaming: throttled updates to the streaming entry
+      let streamBuffer = "";
+      let throttleTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const flushStream = () => {
+        const idx = streamingIndexRef.current;
+        if (idx >= 0) {
+          const currentContent = streamBuffer;
+          setEntries((prev) => {
+            const updated = [...prev];
+            if (updated[idx]) {
+              updated[idx] = { ...updated[idx], content: currentContent };
+            }
+            return updated;
+          });
+        }
+      };
+
+      const onMessage = (chunk: string) => {
+        streamBuffer += chunk;
+        if (!throttleTimer) {
+          throttleTimer = setTimeout(() => {
+            throttleTimer = null;
+            flushStream();
+          }, 50);
+        }
+      };
+
       const agent = new Agent(aiClient, allToolEntries, {
         label: "agent",
         onToolCall,
         onApprovalNeeded: handleApprovalNeeded,
         conversationHistory: conversationHistoryRef.current,
+        onMessage,
       });
 
       try {
         const result = await agent.run(trimmed);
-        addEntry({ type: "assistant", content: result.answer });
+        // Final flush and overwrite with complete answer
+        if (throttleTimer) {
+          clearTimeout(throttleTimer);
+          throttleTimer = null;
+        }
+        const idx = streamingIndexRef.current;
+        if (idx >= 0) {
+          setEntries((prev) => {
+            const updated = [...prev];
+            if (updated[idx]) {
+              updated[idx] = { ...updated[idx], content: result.answer };
+            }
+            return updated;
+          });
+        }
+        streamingIndexRef.current = -1;
+
+        addUsage(result.usage);
         conversationHistoryRef.current = [
           ...conversationHistoryRef.current,
           { role: "user", content: trimmed },
           { role: "assistant", content: result.answer },
         ];
       } catch (e) {
-        addEntry({ type: "assistant", content: `Error: ${String(e)}` });
+        const idx = streamingIndexRef.current;
+        if (idx >= 0) {
+          setEntries((prev) => {
+            const updated = [...prev];
+            if (updated[idx]) {
+              updated[idx] = { ...updated[idx], content: `Error: ${String(e)}` };
+            }
+            return updated;
+          });
+        }
+        streamingIndexRef.current = -1;
       }
       setLoading(false);
     },
-    [loading, exit, selectedModel, provider, runCommand, handleApprovalNeeded],
+    [loading, exit, selectedModel, provider, runCommand, handleApprovalNeeded, pruneHistory, addUsage],
   );
 
   // Build model selector items
@@ -286,6 +358,12 @@ function App() {
   const messagesHeight = Math.max(4, rows - 4 - bottomPanelHeight);
   const maxEntries = Math.max(3, Math.floor(messagesHeight / 3));
 
+  const tokenDisplay = formatTokenDisplay();
+  const placeholderBase = `[${provider}:${selectedModel}${tokenDisplay ? ` ${tokenDisplay}` : ""}]`;
+  const placeholder = loading
+    ? "waiting..."
+    : `${placeholderBase} Ask something... (/ for commands)`;
+
   return (
     <Box flexDirection="column" width={columns} height={rows} padding={1}>
       <Box marginBottom={1}>
@@ -309,6 +387,12 @@ function App() {
           </Box>
         )}
       </Box>
+
+      {isWarning && (
+        <Box flexShrink={0}>
+          <Text color="red" bold>Warning: context window is over 80% full. Oldest messages will be pruned.</Text>
+        </Box>
+      )}
 
       {mode.kind === "command" && (
         <CommandPalette
@@ -348,6 +432,7 @@ function App() {
                 setProvider(session.provider as Provider);
                 setSelectedModel(session.model);
                 clearApprovalCache();
+                resetTokens();
                 addEntry({ type: "system", content: `Resumed session (${session.provider}:${session.model})` });
               }
               setMode({ kind: "chat" });
@@ -377,11 +462,7 @@ function App() {
             value={input}
             onChange={handleInputChange}
             onSubmit={handleSubmit}
-            placeholder={
-              loading
-                ? "waiting..."
-                : `[${provider}:${selectedModel}] Ask something... (/ for commands)`
-            }
+            placeholder={placeholder}
           />
         </Box>
       )}

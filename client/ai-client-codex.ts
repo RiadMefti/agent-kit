@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   ChatResponse,
   ToolCall,
+  OnChunkCallback,
 } from "./types";
 
 const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
@@ -72,23 +73,47 @@ class AIClientCodex implements IAIClient {
     return input;
   }
 
-  private async parseSSEResponse(res: Response): Promise<any> {
-    const text = await res.text();
-    const lines = text.split("\n");
+  private async parseSSEStream(
+    res: Response,
+    onChunk?: OnChunkCallback
+  ): Promise<any> {
+    const body = res.body;
+    if (!body) throw new Error("No response body");
+
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
     let responseData: any = null;
+    let buffer = "";
 
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const data = line.slice(6).trim();
-      if (data === "[DONE]") break;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-      try {
-        const event = JSON.parse(data);
-        if (event.type === "response.completed" && event.response) {
-          responseData = event.response;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      // Keep the last partial line in the buffer
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") break;
+
+        try {
+          const event = JSON.parse(data);
+          if (
+            event.type === "response.output_text.delta" &&
+            event.delta &&
+            onChunk
+          ) {
+            onChunk(event.delta);
+          }
+          if (event.type === "response.completed" && event.response) {
+            responseData = event.response;
+          }
+        } catch {
+          // skip malformed lines
         }
-      } catch {
-        // skip malformed lines
       }
     }
 
@@ -146,7 +171,8 @@ class AIClientCodex implements IAIClient {
 
   async chatCompletion(
     messages: ChatMessage[],
-    tools: ToolDefinition[]
+    tools: ToolDefinition[],
+    onChunk?: OnChunkCallback
   ): Promise<ChatResponse> {
     const maxRetries = 3;
 
@@ -182,7 +208,7 @@ class AIClientCodex implements IAIClient {
           throw new Error(`Codex API error ${res.status}: ${err}`);
         }
 
-        const data = await this.parseSSEResponse(res);
+        const data = await this.parseSSEStream(res, onChunk);
         if (!data) {
           throw new Error("No response.completed event found in stream");
         }

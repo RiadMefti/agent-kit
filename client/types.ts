@@ -78,10 +78,19 @@ export interface ChatChoice {
 }
 
 
+export type OnChunkCallback = (chunk: string) => void;
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface IAIClient {
   chatCompletion(
     messages: ChatMessage[],
-    tools: ToolDefinition[]
+    tools: ToolDefinition[],
+    onChunk?: OnChunkCallback
   ): Promise<ChatResponse>;
 }
 

@@ -115,3 +115,33 @@ export const PROVIDERS: Record<string, ProviderConfig> = {
   codex: codexProvider,
   copilot: copilotProvider,
 };
+
+export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  // Codex models
+  "gpt-5.3-codex": 200_000,
+  "gpt-5.2-codex": 200_000,
+  "gpt-5.1-codex": 200_000,
+  // Copilot models — Claude
+  "claude-sonnet-4.6": 200_000,
+  "claude-sonnet-4.5": 200_000,
+  "claude-sonnet-4": 200_000,
+  "claude-opus-4.6": 200_000,
+  "claude-opus-4.5": 200_000,
+  "claude-haiku-4.5": 200_000,
+  // Copilot models — GPT
+  "gpt-5.2": 128_000,
+  "gpt-5.1": 128_000,
+  "gpt-4.1": 128_000,
+  "gpt-5-mini": 128_000,
+  // Copilot models — Gemini
+  "gemini-2.5-pro": 1_000_000,
+  "gemini-3-flash-preview": 1_000_000,
+  // Copilot models — Grok
+  "grok-code-fast-1": 128_000,
+};
+
+const DEFAULT_CONTEXT_WINDOW = 128_000;
+
+export function getContextWindow(model: string): number {
+  return MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
+}
