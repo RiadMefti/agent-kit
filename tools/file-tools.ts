@@ -43,7 +43,8 @@ export async function writeFile(
 export async function editFile(
   filePath: string,
   oldText: string,
-  newText: string
+  newText: string,
+  replaceAll: boolean = false
 ): Promise<string> {
   try {
     const file = Bun.file(filePath);
@@ -51,15 +52,20 @@ export async function editFile(
 
     const count = content.split(oldText).length - 1;
     if (count === 0) return `Error: old_text not found in ${filePath}`;
-    if (count > 1) return `Error: old_text found ${count} times in ${filePath}. Must be unique.`;
+    if (!replaceAll && count > 1)
+      return `Error: old_text found ${count} times in ${filePath}. Must be unique. Use replace_all to replace every occurrence.`;
 
-    const updated = content.replace(oldText, newText);
+    const updated = replaceAll
+      ? content.replaceAll(oldText, newText)
+      : content.replace(oldText, newText);
     await Bun.write(filePath, updated);
 
     // Build a simple diff for display
     const oldLines = oldText.split("\n");
     const newLines = newText.split("\n");
-    const diffLines: string[] = [`Edited ${filePath}`];
+    const diffLines: string[] = [
+      `Edited ${filePath}${replaceAll && count > 1 ? ` (${count} replacements)` : ""}`,
+    ];
     for (const line of oldLines) {
       diffLines.push(`- ${line}`);
     }
@@ -130,7 +136,7 @@ export const editTool: ToolDefinition = {
   function: {
     name: "edit",
     description:
-      "Edit a file by replacing old_text with new_text. The old_text must appear exactly once in the file to avoid ambiguity. Use the read tool first to see the current content.",
+      "Edit a file by replacing old_text with new_text. The old_text must appear exactly once in the file unless replace_all is true. Use the read tool first to see the current content.",
     strict: true,
     parameters: {
       type: "object",
@@ -141,14 +147,19 @@ export const editTool: ToolDefinition = {
         },
         old_text: {
           type: "string",
-          description: "Exact text to find and replace. Must be unique in the file.",
+          description: "Exact text to find and replace. Must be unique in the file unless replace_all is true.",
         },
         new_text: {
           type: "string",
           description: "Text to replace old_text with. Use empty string to delete.",
         },
+        replace_all: {
+          type: ["boolean", "null"],
+          description:
+            "Replace all occurrences of old_text instead of requiring uniqueness. Defaults to false.",
+        },
       },
-      required: ["file_path", "old_text", "new_text"],
+      required: ["file_path", "old_text", "new_text", "replace_all"],
       additionalProperties: false,
     },
   },

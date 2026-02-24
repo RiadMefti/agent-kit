@@ -42,12 +42,13 @@ export const baseToolEntries: ToolEntry[] = [
   {
     definition: editTool,
     handler: async (args) => {
-      const { file_path, old_text, new_text } = args as {
+      const { file_path, old_text, new_text, replace_all } = args as {
         file_path: string;
         old_text: string;
         new_text: string;
+        replace_all: boolean | null;
       };
-      return await editFile(file_path, old_text, new_text);
+      return await editFile(file_path, old_text, new_text, replace_all ?? false);
     },
   },
   {
