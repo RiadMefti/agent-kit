@@ -6,6 +6,7 @@ import type {
   ChatResponse,
   ToolCall,
   OnChunkCallback,
+  OnRetryCallback,
 } from "./types";
 
 const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
@@ -84,20 +85,23 @@ class AIClientCodex implements IAIClient {
     const decoder = new TextDecoder();
     let responseData: any = null;
     let buffer = "";
+    let streamDone = false;
 
-    while (true) {
+    while (!streamDone) {
       const { done, value } = await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
-      // Keep the last partial line in the buffer
       buffer = lines.pop() ?? "";
 
       for (const line of lines) {
         if (!line.startsWith("data: ")) continue;
         const data = line.slice(6).trim();
-        if (data === "[DONE]") break;
+        if (data === "[DONE]") {
+          streamDone = true;
+          break;
+        }
 
         try {
           const event = JSON.parse(data);
@@ -172,7 +176,8 @@ class AIClientCodex implements IAIClient {
   async chatCompletion(
     messages: ChatMessage[],
     tools: ToolDefinition[],
-    onChunk?: OnChunkCallback
+    onChunk?: OnChunkCallback,
+    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback }
   ): Promise<ChatResponse> {
     const maxRetries = 3;
 
@@ -194,6 +199,7 @@ class AIClientCodex implements IAIClient {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
+        options?.signal?.throwIfAborted();
         const res = await fetch(CODEX_ENDPOINT, {
           method: "POST",
           headers: {
@@ -201,6 +207,7 @@ class AIClientCodex implements IAIClient {
             Authorization: `Bearer ${this.accessToken}`,
           },
           body: JSON.stringify(body),
+          signal: options?.signal,
         });
 
         if (!res.ok) {
@@ -214,7 +221,9 @@ class AIClientCodex implements IAIClient {
         }
         return this.transformResponse(data);
       } catch (e) {
+        if (options?.signal?.aborted) throw e;
         if (attempt === maxRetries - 1) throw e;
+        options?.onRetry?.(attempt + 1, maxRetries, String(e));
         await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
       }
     }

@@ -6,6 +6,7 @@ import type {
   ChatResponse,
   ToolCall,
   OnChunkCallback,
+  OnRetryCallback,
 } from "./types";
 
 const COPILOT_ENDPOINT = "https://api.githubcopilot.com/chat/completions";
@@ -119,7 +120,8 @@ class AIClientCopilot implements IAIClient {
   async chatCompletion(
     messages: ChatMessage[],
     tools: ToolDefinition[],
-    onChunk?: OnChunkCallback
+    onChunk?: OnChunkCallback,
+    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback }
   ): Promise<ChatResponse> {
     const maxRetries = 3;
 
@@ -140,6 +142,7 @@ class AIClientCopilot implements IAIClient {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
+        options?.signal?.throwIfAborted();
         const res = await fetch(COPILOT_ENDPOINT, {
           method: "POST",
           headers: {
@@ -150,6 +153,7 @@ class AIClientCopilot implements IAIClient {
             "x-initiator": "user",
           },
           body: JSON.stringify(body),
+          signal: options?.signal,
         });
 
         if (!res.ok) {
@@ -164,7 +168,9 @@ class AIClientCopilot implements IAIClient {
         const data = await res.json();
         return data as ChatResponse;
       } catch (e) {
+        if (options?.signal?.aborted) throw e;
         if (attempt === maxRetries - 1) throw e;
+        options?.onRetry?.(attempt + 1, maxRetries, String(e));
         await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
       }
     }

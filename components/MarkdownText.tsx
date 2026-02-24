@@ -1,182 +1,214 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { marked, type Token, type Tokens } from "marked";
 
 interface MarkdownTextProps {
   content: string;
 }
 
-function renderInline(line: string): React.ReactNode[] {
+/** Render inline tokens (bold, italic, code, links, text) */
+function renderInlineTokens(tokens: Token[]): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  // Combined regex for inline patterns: `code`, **bold**, *italic*, [text](url)
-  const pattern = /`([^`]+)`|\*\*(.+?)\*\*|\*(.+?)\*|\[([^\]]+)\]\(([^)]+)\)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let key = 0;
-
-  while ((match = pattern.exec(line)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push(line.slice(lastIndex, match.index));
-    }
-
-    if (match[1] !== undefined) {
-      // inline code
-      nodes.push(
-        <Text key={key++} color="yellow">
-          {match[1]}
-        </Text>
-      );
-    } else if (match[2] !== undefined) {
-      // bold
-      nodes.push(
-        <Text key={key++} bold>
-          {match[2]}
-        </Text>
-      );
-    } else if (match[3] !== undefined) {
-      // italic
-      nodes.push(
-        <Text key={key++} italic>
-          {match[3]}
-        </Text>
-      );
-    } else if (match[4] !== undefined && match[5] !== undefined) {
-      // link
-      nodes.push(
-        <Text key={key++}>
-          <Text color="cyan" underline>
-            {match[4]}
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    switch (token.type) {
+      case "strong":
+        nodes.push(
+          <Text key={i} bold>
+            {renderInlineTokens((token as Tokens.Strong).tokens)}
           </Text>
-          <Text dimColor>{` (${match[5]})`}</Text>
-        </Text>
-      );
+        );
+        break;
+      case "em":
+        nodes.push(
+          <Text key={i} italic>
+            {renderInlineTokens((token as Tokens.Em).tokens)}
+          </Text>
+        );
+        break;
+      case "codespan":
+        nodes.push(
+          <Text key={i} color="yellow">
+            {(token as Tokens.Codespan).text}
+          </Text>
+        );
+        break;
+      case "link": {
+        const link = token as Tokens.Link;
+        nodes.push(
+          <Text key={i}>
+            <Text color="cyan" underline>{link.text}</Text>
+            <Text dimColor>{` (${link.href})`}</Text>
+          </Text>
+        );
+        break;
+      }
+      case "del":
+        nodes.push(
+          <Text key={i} strikethrough dimColor>
+            {renderInlineTokens((token as Tokens.Del).tokens)}
+          </Text>
+        );
+        break;
+      case "text": {
+        const t = token as Tokens.Text;
+        if (t.tokens && t.tokens.length > 0) {
+          nodes.push(<React.Fragment key={i}>{renderInlineTokens(t.tokens)}</React.Fragment>);
+        } else {
+          nodes.push(t.text);
+        }
+        break;
+      }
+      case "escape":
+        nodes.push((token as Tokens.Escape).text);
+        break;
+      case "br":
+        nodes.push("\n");
+        break;
+      case "image": {
+        const img = token as Tokens.Image;
+        nodes.push(
+          <Text key={i} dimColor>{`[image: ${img.text || img.href}]`}</Text>
+        );
+        break;
+      }
+      default:
+        // Fallback: render raw text if available
+        if ("text" in token) {
+          nodes.push((token as any).text);
+        } else if ("raw" in token) {
+          nodes.push((token as any).raw);
+        }
+        break;
     }
-
-    lastIndex = match.index + match[0].length;
   }
-
-  if (lastIndex < line.length) {
-    nodes.push(line.slice(lastIndex));
-  }
-
   return nodes;
 }
 
-export function MarkdownText({ content }: MarkdownTextProps) {
-  const lines = content.split("\n");
-  const elements: React.ReactNode[] = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i]!;
-
-    // Code block
-    if (line.trimStart().startsWith("```")) {
-      const lang = line.trimStart().slice(3).trim();
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i]!.trimStart().startsWith("```")) {
-        codeLines.push(lines[i]!);
-        i++;
-      }
-      i++; // skip closing ```
-      elements.push(
-        <Box key={elements.length} flexDirection="column" marginY={0}>
-          {lang && (
-            <Text dimColor>{`  ${lang}`}</Text>
+/** Render a single block-level token */
+function renderBlock(token: Token, key: number): React.ReactNode {
+  switch (token.type) {
+    case "heading": {
+      const heading = token as Tokens.Heading;
+      return (
+        <Text key={key} bold color="cyan">
+          {renderInlineTokens(heading.tokens)}
+        </Text>
+      );
+    }
+    case "paragraph": {
+      const para = token as Tokens.Paragraph;
+      return (
+        <Text key={key} wrap="wrap">
+          {renderInlineTokens(para.tokens)}
+        </Text>
+      );
+    }
+    case "code": {
+      const code = token as Tokens.Code;
+      const lines = code.text.split("\n");
+      return (
+        <Box key={key} flexDirection="column" marginY={0}>
+          {code.lang && (
+            <Text dimColor>{`  ${code.lang}`}</Text>
           )}
-          {codeLines.map((cl, j) => (
+          {lines.map((line, j) => (
             <Text key={j} color="gray">
-              {`  | ${cl}`}
+              {`  | ${line}`}
             </Text>
           ))}
         </Box>
       );
-      continue;
     }
-
-    // Horizontal rule
-    if (/^---+$/.test(line.trim())) {
-      elements.push(
-        <Text key={elements.length} dimColor>
+    case "blockquote": {
+      const bq = token as Tokens.Blockquote;
+      return (
+        <Box key={key} flexDirection="column">
+          {bq.tokens.map((t, j) => (
+            <Text key={j} italic dimColor>
+              {"  | "}{renderInlineTokens("tokens" in t ? (t as any).tokens : [])}
+            </Text>
+          ))}
+        </Box>
+      );
+    }
+    case "list": {
+      const list = token as Tokens.List;
+      return (
+        <Box key={key} flexDirection="column">
+          {list.items.map((item, j) => {
+            const prefix = list.ordered ? `  ${j + 1}. ` : "  - ";
+            return (
+              <Text key={j} wrap="wrap">
+                {prefix}
+                {renderInlineTokens(item.tokens.flatMap((t) =>
+                  "tokens" in t ? (t as any).tokens : [t]
+                ))}
+              </Text>
+            );
+          })}
+        </Box>
+      );
+    }
+    case "hr":
+      return (
+        <Text key={key} dimColor>
           {"  " + "─".repeat(40)}
         </Text>
       );
-      i++;
-      continue;
-    }
-
-    // Headings
-    const headingMatch = line.match(/^(#{1,3})\s+(.+)/);
-    if (headingMatch) {
-      elements.push(
-        <Text key={elements.length} bold color="cyan">
-          {headingMatch[2]}
-        </Text>
+    case "table": {
+      const table = token as Tokens.Table;
+      return (
+        <Box key={key} flexDirection="column">
+          <Text key="header" bold>
+            {"  | "}{table.header.map((h) => h.text).join(" | ")}{" |"}
+          </Text>
+          <Text key="sep" dimColor>
+            {"  |"}{table.header.map(() => "-------").join("|")}{"|"}
+          </Text>
+          {table.rows.map((row, j) => (
+            <Text key={j}>
+              {"  | "}{row.map((cell) => cell.text).join(" | ")}{" |"}
+            </Text>
+          ))}
+        </Box>
       );
-      i++;
-      continue;
     }
-
-    // Blockquote
-    if (line.trimStart().startsWith("> ")) {
-      const quoteText = line.trimStart().slice(2);
-      elements.push(
-        <Text key={elements.length} italic>
-          {`  | ${quoteText}`}
-        </Text>
+    case "html": {
+      const html = token as Tokens.HTML;
+      return (
+        <Text key={key} dimColor>{html.text.trim()}</Text>
       );
-      i++;
-      continue;
     }
+    case "space":
+      return <Text key={key}>{" "}</Text>;
+    default:
+      if ("raw" in token) {
+        return <Text key={key}>{(token as any).raw}</Text>;
+      }
+      return null;
+  }
+}
 
-    // Bullet list
-    const bulletMatch = line.match(/^(\s*)[-*]\s+(.+)/);
-    if (bulletMatch) {
-      const indent = "  " + " ".repeat(bulletMatch[1]!.length);
-      elements.push(
-        <Text key={elements.length} wrap="wrap">
-          {indent + "- "}
-          {renderInline(bulletMatch[2]!)}
-        </Text>
-      );
-      i++;
-      continue;
-    }
+export function MarkdownText({ content }: MarkdownTextProps) {
+  if (!content.trim()) {
+    return null;
+  }
 
-    // Numbered list
-    const numMatch = line.match(/^(\s*)\d+\.\s+(.+)/);
-    if (numMatch) {
-      const indent = "  " + " ".repeat(numMatch[1]!.length);
-      const num = line.match(/^(\s*)(\d+)\./);
-      elements.push(
-        <Text key={elements.length} wrap="wrap">
-          {indent + (num?.[2] ?? "1") + ". "}
-          {renderInline(numMatch[2]!)}
-        </Text>
-      );
-      i++;
-      continue;
-    }
-
-    // Empty line
-    if (line.trim() === "") {
-      elements.push(<Text key={elements.length}>{" "}</Text>);
-      i++;
-      continue;
-    }
-
-    // Regular paragraph with inline formatting
-    elements.push(
-      <Text key={elements.length} wrap="wrap">
-        {renderInline(line)}
-      </Text>
+  let tokens: Token[];
+  try {
+    tokens = marked.lexer(content);
+  } catch {
+    return (
+      <Box flexDirection="column">
+        <Text wrap="wrap">{content}</Text>
+      </Box>
     );
-    i++;
   }
 
   return (
     <Box flexDirection="column">
-      {elements}
+      {tokens.map((token, i) => renderBlock(token, i))}
     </Box>
   );
 }

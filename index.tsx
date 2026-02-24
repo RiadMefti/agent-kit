@@ -1,9 +1,10 @@
 import { useState, useCallback, useRef } from "react";
-import { render, Box, Text, useApp, useInput } from "ink";
+import { render, Box, Text, Static, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import SelectInput from "ink-select-input";
 import Spinner from "ink-spinner";
 import Agent from "./agent/agent";
+import type { AgentStatus } from "./agent/agent";
 import { baseToolEntries } from "./tools";
 import { createTaskToolEntry } from "./tools/task-tool";
 import type { ToolEntry, ToolCallEvent, ApprovalDecision, ApprovalRequest, ChatMessage } from "./client/types";
@@ -13,10 +14,10 @@ import { Message, type ChatEntry } from "./components/Message";
 import { ApprovalPrompt, APPROVAL_HEIGHT, formatArgs } from "./components/ApprovalPrompt";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { SessionsPicker } from "./components/SessionsPicker";
-import { useTerminalSize } from "./hooks/useTerminalSize";
 import { useApproval } from "./hooks/useApproval";
 import { useSession } from "./hooks/useSession";
 import { useContextManager } from "./hooks/useContextManager";
+import { useInputHistory } from "./hooks/useInputHistory";
 
 type Provider = "codex" | "copilot";
 
@@ -41,40 +42,69 @@ const PROVIDER_ITEMS = Object.values(PROVIDERS).map((p) => ({
   value: p.name,
 })).concat({ label: "cancel", value: "__cancel__" });
 
+function statusText(status: AgentStatus): string {
+  switch (status.phase) {
+    case "thinking": return "Thinking...";
+    case "tool": return `Running ${status.name}...`;
+    case "approval": return `Waiting for approval: ${status.name}`;
+    case "retrying": return `Retrying (${status.attempt}/${status.maxRetries})...`;
+    case "idle": return "";
+  }
+}
+
 function App() {
   const { exit } = useApp();
-  const { columns, rows } = useTerminalSize();
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState(PROVIDERS.codex!.defaultModel);
   const [provider, setProvider] = useState<Provider>("codex");
   const [mode, setMode] = useState<InputMode>({ kind: "chat" });
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>({ phase: "idle" });
+
+  // Track how many entries have been committed to Static (never changes mid-exchange)
+  const [committedCount, setCommittedCount] = useState(0);
 
   const { handleApprovalNeeded, clearApprovalCache } = useApproval(setMode);
   const { conversationHistoryRef, resumeSession } = useSession(entries, loading, provider, selectedModel);
-  const { addUsage, pruneHistory, formatTokenDisplay, resetTokens, isWarning, utilization } = useContextManager(selectedModel);
+  const { addUsage, pruneHistory, formatTokenDisplay, resetTokens, isWarning } = useContextManager(selectedModel);
+  const { push: pushHistory, navigate: navigateHistory } = useInputHistory();
 
   const streamingIndexRef = useRef<number>(-1);
+  const abortRef = useRef<AbortController | null>(null);
 
   useInput((_input, key) => {
-    if (key.ctrl && _input === "c") exit();
-    if (mode.kind === "command" && key.escape) {
-      setMode({ kind: "chat" });
+    if (key.ctrl && _input === "c") {
+      if (loading && abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+        return;
+      }
+      exit();
+      return;
     }
-    if (mode.kind === "model" && key.escape) {
-      setMode({ kind: "chat" });
+
+    if (mode.kind === "chat") {
+      if (key.upArrow) {
+        const prev = navigateHistory("up", input);
+        if (prev !== null) setInput(prev);
+        return;
+      }
+      if (key.downArrow) {
+        const next = navigateHistory("down", input);
+        if (next !== null) setInput(next);
+        return;
+      }
     }
-    if (mode.kind === "provider" && key.escape) {
-      setMode({ kind: "chat" });
-    }
+
+    if (mode.kind === "command" && key.escape) setMode({ kind: "chat" });
+    if (mode.kind === "model" && key.escape) setMode({ kind: "chat" });
+    if (mode.kind === "provider" && key.escape) setMode({ kind: "chat" });
     if (mode.kind === "approval" && key.escape) {
       mode.resolve("deny_once");
       setMode({ kind: "chat" });
     }
-    if (mode.kind === "sessions" && key.escape) {
-      setMode({ kind: "chat" });
-    }
+    if (mode.kind === "sessions" && key.escape) setMode({ kind: "chat" });
   });
 
   const addEntry = (entry: ChatEntry) => {
@@ -223,10 +253,15 @@ function App() {
       }
 
       setInput("");
-      addEntry({ type: "user", content: trimmed, promptTokens: undefined, contextPercent: undefined });
+      pushHistory(trimmed);
+
+      // COMMIT all current entries to Static before starting new exchange
+      setCommittedCount(entries.length);
+
+      addEntry({ type: "user", content: trimmed });
       setLoading(true);
 
-      // Create empty streaming entry
+      // Create empty streaming entry for the assistant response
       setEntries((prev) => {
         streamingIndexRef.current = prev.length;
         return [...prev, { type: "assistant", content: "", streaming: true }];
@@ -252,26 +287,34 @@ function App() {
           const time = event.duration
             ? `${(event.duration / 1000).toFixed(1)}s`
             : "";
+
+          if (event.name === "edit" && event.result) {
+            try {
+              const parsed = JSON.parse(event.result);
+              if (typeof parsed.result === "string" && parsed.result.includes("\n- ") && parsed.result.includes("\n+ ")) {
+                addEntry({ type: "tool", content: parsed.result });
+                return;
+              }
+            } catch {}
+          }
+
           addEntry({ type: "tool", content: `✓ ${event.name} completed ${time}` });
         }
       };
 
-      // Streaming: throttled updates to the streaming entry
+      // Streaming
       let streamBuffer = "";
       let throttleTimer: ReturnType<typeof setTimeout> | null = null;
 
       const flushStream = () => {
-        const idx = streamingIndexRef.current;
-        if (idx >= 0) {
-          const currentContent = streamBuffer;
-          setEntries((prev) => {
-            const updated = [...prev];
-            if (updated[idx]) {
-              updated[idx] = { ...updated[idx], content: currentContent };
-            }
-            return updated;
-          });
-        }
+        const currentContent = streamBuffer;
+        setEntries((prev) => {
+          const idx = streamingIndexRef.current;
+          if (idx < 0 || !prev[idx]) return prev;
+          const updated = [...prev];
+          updated[idx] = { type: "assistant", content: currentContent, streaming: true };
+          return updated;
+        });
       };
 
       const onMessage = (chunk: string) => {
@@ -280,9 +323,19 @@ function App() {
           throttleTimer = setTimeout(() => {
             throttleTimer = null;
             flushStream();
-          }, 100);
+          }, 120);
         }
       };
+
+      const cleanupStream = () => {
+        if (throttleTimer) {
+          clearTimeout(throttleTimer);
+          throttleTimer = null;
+        }
+      };
+
+      const abortController = new AbortController();
+      abortRef.current = abortController;
 
       const agent = new Agent(aiClient, allToolEntries, {
         label: "agent",
@@ -290,34 +343,36 @@ function App() {
         onApprovalNeeded: handleApprovalNeeded,
         conversationHistory: conversationHistoryRef.current,
         onMessage,
+        signal: abortController.signal,
+        onStatusChange: (status) => setAgentStatus(status),
+        onRetry: (attempt, maxRetries, error) => {
+          setAgentStatus({ phase: "retrying", attempt, maxRetries });
+          addEntry({ type: "system", content: `Retrying (${attempt}/${maxRetries})... ${error.slice(0, 100)}` });
+        },
       });
 
       try {
         const result = await agent.run(trimmed);
-        const promptTokens = result.usage?.promptTokens;
-        const contextPercent = promptTokens != null ? (promptTokens / getContextWindow(selectedModel)) * 100 : undefined;
+        cleanupStream();
 
-        // Final flush and overwrite with complete answer (streaming off → triggers MarkdownText)
-        if (throttleTimer) {
-          clearTimeout(throttleTimer);
-          throttleTimer = null;
-        }
-        const idx = streamingIndexRef.current;
-        if (idx >= 0) {
-          setEntries((prev) => {
-            const updated = [...prev];
-            if (updated[idx]) {
-              updated[idx] = {
-                type: "assistant",
-                content: result.answer,
-                streaming: false,
-                promptTokens,
-                contextPercent,
-              };
-            }
-            return updated;
-          });
-        }
+        const promptTokens = result.usage?.promptTokens;
+        const contextPercent = promptTokens != null
+          ? (promptTokens / getContextWindow(selectedModel)) * 100
+          : undefined;
+
+        setEntries((prev) => {
+          const idx = streamingIndexRef.current;
+          if (idx < 0 || !prev[idx]) return prev;
+          const updated = [...prev];
+          updated[idx] = {
+            type: "assistant",
+            content: result.answer,
+            streaming: false,
+            promptTokens,
+            contextPercent,
+          };
+          return updated;
+        });
         streamingIndexRef.current = -1;
 
         addUsage(result.usage);
@@ -327,25 +382,24 @@ function App() {
           { role: "assistant", content: result.answer },
         ];
       } catch (e) {
-        if (throttleTimer) {
-          clearTimeout(throttleTimer);
-          throttleTimer = null;
-        }
-        const idx = streamingIndexRef.current;
-        if (idx >= 0) {
-          setEntries((prev) => {
-            const updated = [...prev];
-            if (updated[idx]) {
-              updated[idx] = { type: "assistant", content: `Error: ${String(e)}`, streaming: false };
-            }
-            return updated;
-          });
-        }
+        cleanupStream();
+        const errorMsg = abortController.signal.aborted
+          ? "Request aborted by user"
+          : `Error: ${String(e)}`;
+        setEntries((prev) => {
+          const idx = streamingIndexRef.current;
+          if (idx < 0 || !prev[idx]) return prev;
+          const updated = [...prev];
+          updated[idx] = { type: "assistant", content: errorMsg, streaming: false };
+          return updated;
+        });
         streamingIndexRef.current = -1;
       }
+      abortRef.current = null;
+      setAgentStatus({ phase: "idle" });
       setLoading(false);
     },
-    [loading, exit, selectedModel, provider, runCommand, handleApprovalNeeded, pruneHistory, addUsage],
+    [loading, exit, selectedModel, provider, entries.length, runCommand, handleApprovalNeeded, pruneHistory, addUsage, pushHistory],
   );
 
   // Build model selector items
@@ -360,50 +414,57 @@ function App() {
         ]
       : [];
 
-  // Calculate exact heights to avoid Ink overflow bugs
-  const bottomPanelHeight =
-    mode.kind === "approval" ? APPROVAL_HEIGHT
-    : mode.kind === "command" ? COMMANDS.length + 1
-    : mode.kind === "sessions" ? Math.min((mode.sessions?.length ?? 0) + 2, 12)
-    : mode.kind === "model" ? Math.min(modelItems.length + 1, 12)
-    : mode.kind === "provider" ? PROVIDER_ITEMS.length + 1
-    : 1;
-  const messagesHeight = Math.max(4, rows - 4 - bottomPanelHeight);
-  const maxEntries = Math.max(3, Math.floor(messagesHeight / 3));
-
   const tokenDisplay = formatTokenDisplay();
   const placeholderBase = `[${provider}:${selectedModel}${tokenDisplay ? ` ${tokenDisplay}` : ""}]`;
   const placeholder = loading
-    ? "waiting..."
+    ? "waiting... (Ctrl+C to abort)"
     : `${placeholderBase} Ask something... (/ for commands)`;
 
+  const currentStatus = statusText(agentStatus);
+
+  // SPLIT: committed entries go to Static (scroll naturally, never re-rendered).
+  // Current exchange stays in dynamic area (re-rendered on each cycle).
+  // Entries only get committed when the user sends a NEW message.
+  const staticItems = entries.slice(0, committedCount);
+  const dynamicItems = entries.slice(committedCount);
+
   return (
-    <Box flexDirection="column" width={columns} height={rows} padding={1}>
-      <Box marginBottom={1}>
-        <Text bold color="magenta">
-          agent-kit
-        </Text>
-        <Text dimColor> — type a message, "/" for commands, "exit" to quit</Text>
-      </Box>
+    <>
+      {/* Static: past exchanges — rendered once, scroll naturally */}
+      <Static items={[
+        { id: "__header__", _isHeader: true } as any,
+        ...staticItems.map((e, i) => ({ ...e, id: `s-${i}`, streaming: false })),
+      ]}>
+        {(item: any) => {
+          if (item._isHeader) {
+            return (
+              <Box marginBottom={1} key="header">
+                <Text bold color="magenta">agent-kit</Text>
+                <Text dimColor> — type a message, "/" for commands, "exit" to quit</Text>
+              </Box>
+            );
+          }
+          return <Message key={item.id} entry={item} model={selectedModel} />;
+        }}
+      </Static>
 
-      <Box flexDirection="column" height={messagesHeight} overflow="hidden">
-        {entries.slice(-maxEntries).map((entry, i) => (
-          <Message key={i} entry={entry} model={selectedModel} />
-        ))}
+      {/* Dynamic: current exchange — re-rendered each cycle */}
+      {dynamicItems.map((entry, i) => (
+        <Message key={`d-${i}`} entry={entry} model={selectedModel} />
+      ))}
 
-        {loading && (
-          <Box>
-            <Text color="yellow">
-              <Spinner type="dots" />{" "}
-            </Text>
-            <Text dimColor>Thinking...</Text>
-          </Box>
-        )}
-      </Box>
+      {loading && currentStatus && (
+        <Box>
+          <Text color="yellow">
+            <Spinner type="dots" />{" "}
+          </Text>
+          <Text dimColor>{currentStatus}</Text>
+        </Box>
+      )}
 
       {isWarning && (
-        <Box flexShrink={0}>
-          <Text color="red" bold>Warning: context window is over 80% full. Oldest messages will be pruned.</Text>
+        <Box>
+          <Text color="red" bold>Warning: context window is over 80% full.</Text>
         </Box>
       )}
 
@@ -421,53 +482,50 @@ function App() {
       )}
 
       {mode.kind === "model" && (
-        <Box flexDirection="column" flexShrink={0}>
+        <Box flexDirection="column">
           <Text bold dimColor>Select a model:</Text>
           <SelectInput items={modelItems} onSelect={handleModelSelect} />
         </Box>
       )}
 
       {mode.kind === "provider" && (
-        <Box flexDirection="column" flexShrink={0}>
+        <Box flexDirection="column">
           <Text bold dimColor>Select a provider:</Text>
           <SelectInput items={PROVIDER_ITEMS} onSelect={handleProviderSelect} />
         </Box>
       )}
 
       {mode.kind === "sessions" && (
-        <Box flexShrink={0}>
-          <SessionsPicker
-            sessions={mode.sessions}
-            onSelect={(session) => {
-              if (session) {
-                setEntries(session.entries as typeof entries);
-                resumeSession(session);
-                setProvider(session.provider as Provider);
-                setSelectedModel(session.model);
-                clearApprovalCache();
-                resetTokens();
-                addEntry({ type: "system", content: `Resumed session (${session.provider}:${session.model})` });
-              }
-              setMode({ kind: "chat" });
-            }}
-          />
-        </Box>
+        <SessionsPicker
+          sessions={mode.sessions}
+          onSelect={(session) => {
+            if (session) {
+              setEntries(session.entries as typeof entries);
+              resumeSession(session);
+              setProvider(session.provider as Provider);
+              setSelectedModel(session.model);
+              clearApprovalCache();
+              resetTokens();
+              setCommittedCount(0);
+              addEntry({ type: "system", content: `Resumed session (${session.provider}:${session.model})` });
+            }
+            setMode({ kind: "chat" });
+          }}
+        />
       )}
 
       {mode.kind === "approval" && (
-        <Box flexShrink={0}>
-          <ApprovalPrompt
-            request={mode.request}
-            onDecide={(decision) => {
-              mode.resolve(decision);
-              setMode({ kind: "chat" });
-            }}
-          />
-        </Box>
+        <ApprovalPrompt
+          request={mode.request}
+          onDecide={(decision) => {
+            mode.resolve(decision);
+            setMode({ kind: "chat" });
+          }}
+        />
       )}
 
       {mode.kind === "chat" && (
-        <Box flexShrink={0}>
+        <Box>
           <Text bold color="cyan">
             {"❯ "}
           </Text>
@@ -479,19 +537,9 @@ function App() {
           />
         </Box>
       )}
-    </Box>
+    </>
   );
 }
 
-const ALT_SCREEN_ON = "\x1B[?1049h";
-const ALT_SCREEN_OFF = "\x1B[?1049l";
-
-function exitAltScreen() {
-  try { process.stdout.write(ALT_SCREEN_OFF); } catch {}
-}
-
-process.stdout.write(ALT_SCREEN_ON);
-process.on("exit", exitAltScreen);
-
 const instance = render(<App />);
-instance.waitUntilExit().then(exitAltScreen);
+instance.waitUntilExit();

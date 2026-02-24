@@ -10,7 +10,15 @@ import type {
   ApprovalHandler,
   TokenUsage,
   OnChunkCallback,
+  OnRetryCallback,
 } from "../client/types";
+
+export type AgentStatus =
+  | { phase: "thinking" }
+  | { phase: "tool"; name: string }
+  | { phase: "approval"; name: string }
+  | { phase: "retrying"; attempt: number; maxRetries: number }
+  | { phase: "idle" };
 
 export interface AgentOptions {
   maxIterations?: number;
@@ -20,6 +28,9 @@ export interface AgentOptions {
   onApprovalNeeded?: ApprovalHandler;
   conversationHistory?: ChatMessage[];
   onMessage?: OnChunkCallback;
+  onStatusChange?: (status: AgentStatus) => void;
+  onRetry?: OnRetryCallback;
+  signal?: AbortSignal;
 }
 
 export interface AgentResult {
@@ -100,7 +111,8 @@ RULES — follow these strictly:
 4. COMPLETE THE FULL TASK. Don't stop partway to ask "should I continue?" or "ready for the next step?". Finish the entire request, then report back.
 5. WRITE CODE DIRECTLY. When asked to implement something, read the relevant files, make the edits with write/edit, and confirm the changes. Don't describe the changes you would make — make them.
 6. All file paths should be relative to or absolute from the working directory shown above. You already know the project structure — use it.
-7. The todo_read/todo_write tools are ONLY for very long multi-session projects where you need persistent task tracking across separate conversations. Do NOT use them for normal requests.`;
+7. The todo_read/todo_write tools are ONLY for very long multi-session projects where you need persistent task tracking across separate conversations. Do NOT use them for normal requests.
+8. ALWAYS use the write/edit tools for creating or modifying files — NEVER use bash with echo/printf/cat/sed for file operations. The write/edit tools show diffs and are safer.`;
 
 function buildSystemPrompt(cwd: string): string {
   const ctx = buildWorkspaceContext(cwd);
@@ -115,6 +127,9 @@ class Agent {
   private onToolCall?: (event: ToolCallEvent) => void;
   private onApprovalNeeded?: ApprovalHandler;
   private onMessage?: OnChunkCallback;
+  private onStatusChange?: (status: AgentStatus) => void;
+  private onRetry?: OnRetryCallback;
+  private signal?: AbortSignal;
   private conversationHistory: ChatMessage[];
   private messages: ChatMessage[] = [];
   private toolHandlers: Record<string, ToolHandler>;
@@ -132,6 +147,9 @@ class Agent {
     this.onToolCall = options?.onToolCall;
     this.onApprovalNeeded = options?.onApprovalNeeded;
     this.onMessage = options?.onMessage;
+    this.onStatusChange = options?.onStatusChange;
+    this.onRetry = options?.onRetry;
+    this.signal = options?.signal;
     this.conversationHistory = options?.conversationHistory ?? [];
 
     this.toolHandlers = {};
@@ -154,6 +172,7 @@ class Agent {
   ): Promise<"proceed" | "denied"> {
     const SAFE_TOOLS = new Set(["read", "glob", "grep", "web_fetch", "todo_read"]);
     if (SAFE_TOOLS.has(name) || !this.onApprovalNeeded) return "proceed";
+    this.onStatusChange?.({ phase: "approval", name });
     const decision = await this.onApprovalNeeded({ toolCallId, name, args });
     return decision === "allow_once" || decision === "allow_always" ? "proceed" : "denied";
   }
@@ -195,14 +214,19 @@ class Agent {
 
     const totalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
+    this.onStatusChange?.({ phase: "thinking" });
+
+    // First call
     let response = await this.aiClient.chatCompletion(
       this.messages,
       this.toolDefinitions,
-      this.onMessage
+      this.onMessage,
+      { signal: this.signal, onRetry: this.onRetry }
     );
     this.accumulateUsage(totalUsage, response.usage);
 
     if (!response.choices?.length) {
+      this.onStatusChange?.({ phase: "idle" });
       return { answer: "Error: API returned no response", iterations: 0, usage: totalUsage };
     }
     let choice = response.choices[0]!;
@@ -211,6 +235,7 @@ class Agent {
 
     while (
       choice.finish_reason === "tool_calls" &&
+      choice.message.tool_calls?.length &&
       iterations < this.maxIterations
     ) {
       iterations++;
@@ -237,6 +262,7 @@ class Agent {
             };
           }
 
+          this.onStatusChange?.({ phase: "tool", name });
           this.onToolCall?.({ name, args: parsedArgs, status: "started" });
           const start = Date.now();
           const content = await this.handleToolCall(
@@ -257,18 +283,24 @@ class Agent {
         });
       }
 
+      this.onStatusChange?.({ phase: "thinking" });
+
       response = await this.aiClient.chatCompletion(
         this.messages,
         this.toolDefinitions,
-        this.onMessage
+        this.onMessage,
+        { signal: this.signal, onRetry: this.onRetry }
       );
       this.accumulateUsage(totalUsage, response.usage);
 
       if (!response.choices?.length) {
+        this.onStatusChange?.({ phase: "idle" });
         return { answer: "Error: API returned no response mid-loop", iterations, usage: totalUsage };
       }
       choice = response.choices[0]!;
     }
+
+    this.onStatusChange?.({ phase: "idle" });
 
     if (iterations >= this.maxIterations) {
       return { answer: "Error: Max iterations reached", iterations, usage: totalUsage };

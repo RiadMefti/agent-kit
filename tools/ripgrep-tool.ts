@@ -14,13 +14,15 @@ export async function grep(
       stdout: "pipe",
       stderr: "pipe",
     });
-    const output = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
+    const [output, stderrOutput, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
 
     if (exitCode === 1) return "No matches found";
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      return `Error: ${stderr || `rg exited with code ${exitCode}`}`;
+      return `Error: ${stderrOutput || `rg exited with code ${exitCode}`}`;
     }
     return output || "No matches found";
   } catch (e) {

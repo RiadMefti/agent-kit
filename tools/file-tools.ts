@@ -55,7 +55,18 @@ export async function editFile(
 
     const updated = content.replace(oldText, newText);
     await Bun.write(filePath, updated);
-    return `Successfully edited ${filePath}`;
+
+    // Build a simple diff for display
+    const oldLines = oldText.split("\n");
+    const newLines = newText.split("\n");
+    const diffLines: string[] = [`Edited ${filePath}`];
+    for (const line of oldLines) {
+      diffLines.push(`- ${line}`);
+    }
+    for (const line of newLines) {
+      diffLines.push(`+ ${line}`);
+    }
+    return diffLines.join("\n");
   } catch (e) {
     return `Error: ${String(e)}`;
   }

@@ -79,6 +79,7 @@ export interface ChatChoice {
 
 
 export type OnChunkCallback = (chunk: string) => void;
+export type OnRetryCallback = (attempt: number, maxRetries: number, error: string) => void;
 
 export interface TokenUsage {
   promptTokens: number;
@@ -90,7 +91,8 @@ export interface IAIClient {
   chatCompletion(
     messages: ChatMessage[],
     tools: ToolDefinition[],
-    onChunk?: OnChunkCallback
+    onChunk?: OnChunkCallback,
+    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback }
   ): Promise<ChatResponse>;
 }
 
