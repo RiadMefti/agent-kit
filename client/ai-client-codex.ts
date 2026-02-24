@@ -46,6 +46,15 @@ class AIClientCodex implements IAIClient {
           content: [{ type: "input_text", text: msg.content }],
         });
       } else if (msg.role === "assistant") {
+        // Always include text content if present
+        if (msg.content) {
+          input.push({
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: msg.content }],
+          });
+        }
+        // Always include tool calls if present (they're separate items in the Responses API)
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           for (const tc of msg.tool_calls) {
             input.push({
@@ -55,11 +64,13 @@ class AIClientCodex implements IAIClient {
               call_id: tc.id,
             });
           }
-        } else {
+        }
+        // If neither content nor tool calls, send empty message
+        if (!msg.content && (!msg.tool_calls || msg.tool_calls.length === 0)) {
           input.push({
             type: "message",
             role: "assistant",
-            content: [{ type: "output_text", text: msg.content ?? "" }],
+            content: [{ type: "output_text", text: "" }],
           });
         }
       } else if (msg.role === "tool") {

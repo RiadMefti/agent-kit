@@ -4,6 +4,7 @@ import { join, basename } from "path";
 import type {
   IAIClient,
   ChatMessage,
+  ChatChoice,
   ToolEntry,
   ToolHandler,
   ToolCallEvent,
@@ -101,14 +102,15 @@ WORKSPACE:
 {workspace}
 
 RULES — follow these strictly:
-1. ACT IMMEDIATELY. When the user asks you to do something, start doing it right away using your tools. Do not explain what you plan to do first. Do not create todo lists or plans. Just do the work.
-2. BE CONCISE. After completing work, briefly state what you did and what changed. No preamble, no bullet-point plans, no "I'll now proceed to..." — just results.
+1. ACT IMMEDIATELY using your tools. When the user asks you to do something, call the appropriate tools right away. Do NOT explain what you plan to do. Do NOT output code in your response. Do NOT create plans or todo lists. Just call the tools.
+2. NEVER OUTPUT CODE AS TEXT. This is critical. When you need to create or modify code, ALWAYS use the write or edit tools. NEVER put code in your text response — the user cannot use code from your response, only tool calls actually change files.
 3. USE TOOLS, NOT WORDS. Never ask the user to paste code or share files. Use glob, read, grep, bash to find what you need yourself.
 4. COMPLETE THE FULL TASK. Don't stop partway to ask "should I continue?" or "ready for the next step?". Finish the entire request, then report back.
-5. WRITE CODE DIRECTLY. When asked to implement something, read the relevant files, make the edits with write/edit, and confirm the changes. Don't describe the changes you would make — make them.
+5. BE CONCISE. After completing work, briefly state what you did and what changed. No preamble, no bullet-point plans, no "I'll now proceed to..." — just results.
 6. All file paths should be relative to or absolute from the working directory shown above. You already know the project structure — use it.
 7. The todo_read/todo_write tools are ONLY for very long multi-session projects where you need persistent task tracking across separate conversations. Do NOT use them for normal requests.
-8. ALWAYS use the write/edit tools for creating or modifying files — NEVER use bash with echo/printf/cat/sed for file operations. The write/edit tools show diffs and are safer.`;
+8. ALWAYS use the write/edit tools for creating or modifying files — NEVER use bash with echo/printf/cat/sed for file operations. The write/edit tools show diffs and are safer.
+9. If you realize you described changes instead of making them, immediately call the tools to make the actual changes. Self-correction is expected.`;
 
 function buildSystemPrompt(cwd: string): string {
   const ctx = buildWorkspaceContext(cwd);
@@ -200,6 +202,45 @@ class Agent {
     acc.totalTokens += raw.total_tokens;
   }
 
+  /**
+   * Detect when the model outputs code or describes changes in text
+   * instead of using tools to actually make them.
+   */
+  private looksLikeUnexecutedWork(content: string | null): boolean {
+    if (!content || content.length < 80) return false;
+
+    // Large code blocks (>200 chars) in the response = model showing code instead of writing it
+    const hasLargeCodeBlock = /```[\w]*\n[\s\S]{200,}?\n```/.test(content);
+
+    // Patterns that suggest the model intended to make changes but didn't
+    const actionPatterns = [
+      /\bI (?:would|will|can|shall) (?:now |then )?(?:create|modify|edit|change|update|add|write|implement|replace|fix|refactor)/i,
+      /\bI'(?:ll|m going to) (?:create|modify|edit|change|update|add|write|implement|replace|fix|refactor)/i,
+      /\bHere(?:'s| is) (?:the |an? )?(?:updated|modified|new|complete|full|fixed|refactored)\s*(?:code|file|implementation|version)/i,
+      /\bI (?:didn't|did not) (?:actually |really )?(?:run|execute|make|apply)/i,
+    ];
+    const hasActionLanguage = actionPatterns.some((p) => p.test(content));
+
+    return hasLargeCodeBlock || hasActionLanguage;
+  }
+
+  private async nextCompletion(
+    totalUsage: TokenUsage
+  ): Promise<{ choice: ChatChoice | null }> {
+    this.onStatusChange?.({ phase: "thinking" });
+    const response = await this.aiClient.chatCompletion(
+      this.messages,
+      this.toolDefinitions,
+      this.onMessage,
+      { signal: this.signal, onRetry: this.onRetry }
+    );
+    this.accumulateUsage(totalUsage, response.usage);
+    if (!response.choices?.length) {
+      return { choice: null };
+    }
+    return { choice: response.choices[0]! };
+  }
+
   async run(prompt: string): Promise<AgentResult> {
     this.messages = [
       { role: "system", content: this.systemPrompt },
@@ -209,90 +250,115 @@ class Agent {
 
     const totalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
-    this.onStatusChange?.({ phase: "thinking" });
-
-    // First call
-    let response = await this.aiClient.chatCompletion(
-      this.messages,
-      this.toolDefinitions,
-      this.onMessage,
-      { signal: this.signal, onRetry: this.onRetry }
-    );
-    this.accumulateUsage(totalUsage, response.usage);
-
-    if (!response.choices?.length) {
+    const { choice: firstChoice } = await this.nextCompletion(totalUsage);
+    if (!firstChoice) {
       this.onStatusChange?.({ phase: "idle" });
       return { answer: "Error: API returned no response", iterations: 0, usage: totalUsage };
     }
-    let choice = response.choices[0]!;
+    let choice = firstChoice;
 
     let iterations = 0;
+    let nudgeCount = 0;
+    const MAX_NUDGES = 2;
 
-    while (
-      choice.finish_reason === "tool_calls" &&
-      choice.message.tool_calls?.length &&
-      iterations < this.maxIterations
-    ) {
-      iterations++;
-      this.messages.push(choice.message);
+    while (iterations < this.maxIterations) {
+      const hasToolCalls =
+        choice.message.tool_calls && choice.message.tool_calls.length > 0;
+      const isLengthTruncated = choice.finish_reason === "length";
 
-      const toolCallResults = await Promise.all(
-        choice.message.tool_calls!.map(async (toolCall) => {
-          if (toolCall.type !== "function") {
-            return { tool_call_id: toolCall.id, content: "{}" };
-          }
-          const name = toolCall.function.name;
-          let parsedArgs: unknown;
-          try {
-            parsedArgs = JSON.parse(toolCall.function.arguments);
-          } catch {
-            parsedArgs = toolCall.function.arguments;
-          }
-          const approval = await this.requestApproval(toolCall.id, name, parsedArgs);
-          if (approval === "denied") {
-            this.onToolCall?.({ name, args: parsedArgs, status: "denied" });
-            return {
-              tool_call_id: toolCall.id,
-              content: JSON.stringify({ error: `Tool '${name}' was denied by the user.` }),
-            };
-          }
+      if (hasToolCalls) {
+        // ── Model wants to use tools — execute them ──
+        iterations++;
+        this.messages.push(choice.message);
 
-          this.onStatusChange?.({ phase: "tool", name });
-          this.onToolCall?.({ name, args: parsedArgs, status: "started" });
-          const start = Date.now();
-          const content = await this.handleToolCall(
-            name,
-            toolCall.function.arguments
-          );
-          const duration = Date.now() - start;
-          this.onToolCall?.({ name, args: parsedArgs, status: "completed", result: content, duration });
-          return { tool_call_id: toolCall.id, content };
-        })
-      );
+        const toolCallResults = await Promise.all(
+          choice.message.tool_calls!.map(async (toolCall) => {
+            if (toolCall.type !== "function") {
+              return { tool_call_id: toolCall.id, content: "{}" };
+            }
+            const name = toolCall.function.name;
+            let parsedArgs: unknown;
+            try {
+              parsedArgs = JSON.parse(toolCall.function.arguments);
+            } catch {
+              parsedArgs = toolCall.function.arguments;
+            }
+            const approval = await this.requestApproval(toolCall.id, name, parsedArgs);
+            if (approval === "denied") {
+              this.onToolCall?.({ name, args: parsedArgs, status: "denied" });
+              return {
+                tool_call_id: toolCall.id,
+                content: JSON.stringify({ error: `Tool '${name}' was denied by the user.` }),
+              };
+            }
 
-      for (const result of toolCallResults) {
+            this.onStatusChange?.({ phase: "tool", name });
+            this.onToolCall?.({ name, args: parsedArgs, status: "started" });
+            const start = Date.now();
+            const content = await this.handleToolCall(
+              name,
+              toolCall.function.arguments
+            );
+            const duration = Date.now() - start;
+            this.onToolCall?.({ name, args: parsedArgs, status: "completed", result: content, duration });
+            return { tool_call_id: toolCall.id, content };
+          })
+        );
+
+        for (const result of toolCallResults) {
+          this.messages.push({
+            role: "tool",
+            tool_call_id: result.tool_call_id,
+            content: result.content,
+          });
+        }
+
+        const { choice: next } = await this.nextCompletion(totalUsage);
+        if (!next) {
+          this.onStatusChange?.({ phase: "idle" });
+          return { answer: "Error: API returned no response mid-loop", iterations, usage: totalUsage };
+        }
+        choice = next;
+
+      } else if (isLengthTruncated) {
+        // ── Model was cut off mid-response — ask it to continue ──
+        iterations++;
+        this.messages.push(choice.message);
+        this.messages.push({ role: "user", content: "Continue." });
+
+        const { choice: next } = await this.nextCompletion(totalUsage);
+        if (!next) {
+          this.onStatusChange?.({ phase: "idle" });
+          return { answer: "Error: API returned no response mid-loop", iterations, usage: totalUsage };
+        }
+        choice = next;
+
+      } else if (
+        nudgeCount < MAX_NUDGES &&
+        this.looksLikeUnexecutedWork(choice.message.content)
+      ) {
+        // ── Model described changes instead of making them — nudge it ──
+        nudgeCount++;
+        iterations++;
+        this.messages.push(choice.message);
         this.messages.push({
-          role: "tool",
-          tool_call_id: result.tool_call_id,
-          content: result.content,
+          role: "user",
+          content:
+            "You described changes or wrote code in your response instead of using your tools. " +
+            "Do not explain or show code — use the edit, write, and bash tools to make the changes directly. Act now.",
         });
+
+        const { choice: next } = await this.nextCompletion(totalUsage);
+        if (!next) {
+          this.onStatusChange?.({ phase: "idle" });
+          return { answer: "Error: API returned no response mid-loop", iterations, usage: totalUsage };
+        }
+        choice = next;
+
+      } else {
+        // ── Model is genuinely done ──
+        break;
       }
-
-      this.onStatusChange?.({ phase: "thinking" });
-
-      response = await this.aiClient.chatCompletion(
-        this.messages,
-        this.toolDefinitions,
-        this.onMessage,
-        { signal: this.signal, onRetry: this.onRetry }
-      );
-      this.accumulateUsage(totalUsage, response.usage);
-
-      if (!response.choices?.length) {
-        this.onStatusChange?.({ phase: "idle" });
-        return { answer: "Error: API returned no response mid-loop", iterations, usage: totalUsage };
-      }
-      choice = response.choices[0]!;
     }
 
     this.onStatusChange?.({ phase: "idle" });
