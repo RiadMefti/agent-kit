@@ -19,7 +19,23 @@ export function CommandPalette({
   commands: Command[];
 }) {
   const filter = input.slice(1).toLowerCase();
-  const matches = commands.filter((c) => c.value.slice(1).startsWith(filter));
+  const score = (value: string, f: string): number => {
+    if (!f) return 100;
+    const v = value.slice(1).toLowerCase();
+    if (v.startsWith(f)) return 80 + f.length;
+    if (v.includes(f)) return 50 + f.length;
+    let i = 0;
+    for (const ch of v) {
+      if (ch === f[i]) i++;
+      if (i === f.length) return 20 + f.length;
+    }
+    return -1;
+  };
+  const matches = commands
+    .map((c) => ({ cmd: c, s: score(c.value, filter) }))
+    .filter((x) => x.s >= 0)
+    .sort((a, b) => b.s - a.s)
+    .map((x) => x.cmd);
   const [idx, setIdx] = useState(0);
 
   useEffect(() => { setIdx(0); }, [filter]);
@@ -51,6 +67,7 @@ export function CommandPalette({
           <Text dimColor>{"  "}{cmd.desc}</Text>
         </Box>
       ))}
+      <Box marginLeft={2}><Text dimColor>↑/↓ navigate • Enter run • Esc close</Text></Box>
       {matches.length === 0 && (
         <Box marginLeft={2}><Text dimColor>No matching commands</Text></Box>
       )}

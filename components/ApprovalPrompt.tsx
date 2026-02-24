@@ -1,6 +1,7 @@
 import { Box, Text } from "ink";
 import SelectInput from "ink-select-input";
 import type { ApprovalRequest, ApprovalDecision } from "../client/types";
+import { riskLabel } from "../core/policy";
 
 export function formatArgs(args: unknown): string {
   if (typeof args === "string") return args;
@@ -38,6 +39,8 @@ export function ApprovalPrompt({
   onDecide: (d: ApprovalDecision) => void;
 }) {
   const argsStr = formatArgs(request.args);
+  const risk = riskLabel(request.name);
+  const riskColor = risk === "shell" ? "red" : risk === "filesystem" ? "yellow" : risk === "network" ? "magenta" : "green";
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
       <Box marginBottom={1}>
@@ -45,7 +48,11 @@ export function ApprovalPrompt({
       </Box>
       <Box marginBottom={1}>
         <Text bold>{request.name}</Text>
+        <Text color={riskColor}>{"  "}[{risk}]</Text>
         {argsStr ? <Text dimColor>{"  "}{argsStr}</Text> : null}
+      </Box>
+      <Box marginBottom={1}>
+        <Text dimColor>↑/↓ select • Enter confirm • Esc deny once</Text>
       </Box>
       <SelectInput
         items={APPROVAL_ITEMS}

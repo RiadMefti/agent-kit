@@ -12,13 +12,9 @@ import type {
   OnChunkCallback,
   OnRetryCallback,
 } from "../client/types";
+import { requiresApproval } from "../core/policy";
 
-export type AgentStatus =
-  | { phase: "thinking" }
-  | { phase: "tool"; name: string }
-  | { phase: "approval"; name: string }
-  | { phase: "retrying"; attempt: number; maxRetries: number }
-  | { phase: "idle" };
+export type { AgentStatus } from "../core/types";
 
 export interface AgentOptions {
   maxIterations?: number;
@@ -170,8 +166,7 @@ class Agent {
     name: string,
     args: unknown
   ): Promise<"proceed" | "denied"> {
-    const SAFE_TOOLS = new Set(["read", "glob", "grep", "web_fetch", "todo_read"]);
-    if (SAFE_TOOLS.has(name) || !this.onApprovalNeeded) return "proceed";
+    if (!requiresApproval(name) || !this.onApprovalNeeded) return "proceed";
     this.onStatusChange?.({ phase: "approval", name });
     const decision = await this.onApprovalNeeded({ toolCallId, name, args });
     return decision === "allow_once" || decision === "allow_always" ? "proceed" : "denied";
