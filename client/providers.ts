@@ -1,6 +1,7 @@
 import type { IAIClient } from "./types";
 import AIClientCodex from "./ai-client-codex";
 import AIClientCopilot from "./ai-client-copilot";
+import AIClientClaude from "./ai-client-claude";
 import {
   extractTokenInfo,
   isTokenExpired,
@@ -14,6 +15,10 @@ import {
   pollForToken,
   getCopilotToken,
 } from "./copilot-auth";
+import {
+  CLAUDE_MODELS,
+  hasClaudeCredentials,
+} from "./claude-auth";
 
 export interface ModelInfo {
   slug: string;
@@ -111,9 +116,43 @@ const copilotProvider: ProviderConfig = {
   },
 };
 
+const claudeProvider: ProviderConfig = {
+  name: "claude",
+  displayName: "Claude (Subscription)",
+  defaultModel: "claude-sonnet-4-6",
+
+  createClient(model: string): IAIClient {
+    return new AIClientClaude(model);
+  },
+
+  async getModels(): Promise<ModelInfo[]> {
+    return CLAUDE_MODELS.map((m) => ({
+      slug: m.slug,
+      display_name: m.display_name,
+      description: m.description,
+    }));
+  },
+
+  async login(): Promise<string> {
+    try {
+      const { execSync } = await import("child_process");
+      execSync("claude login", { stdio: "inherit" });
+      return "Claude Code login complete.";
+    } catch {
+      return "Login failed. Make sure Claude Code CLI is installed (`npm install -g @anthropic-ai/claude-code`).";
+    }
+  },
+
+  getStatus(model: string): string {
+    const loggedIn = hasClaudeCredentials();
+    return `Provider: Claude (Subscription)\nStatus: ${loggedIn ? "authenticated via Claude Code" : "not logged in — run /login or `claude login`"}\nModel: ${model}`;
+  },
+};
+
 export const PROVIDERS: Record<string, ProviderConfig> = {
   codex: codexProvider,
   copilot: copilotProvider,
+  claude: claudeProvider,
 };
 
 export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
@@ -138,6 +177,11 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "gemini-3-flash-preview": 1_000_000,
   // Copilot models — Grok
   "grok-code-fast-1": 128_000,
+  // Claude (subscription) models
+  "claude-opus-4-6": 200_000,
+  "claude-sonnet-4-6": 200_000,
+  "claude-opus-4-5": 200_000,
+  "claude-sonnet-4-5": 200_000,
 };
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;

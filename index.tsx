@@ -19,7 +19,7 @@ import { useSession } from "./hooks/useSession";
 import { useContextManager } from "./hooks/useContextManager";
 import { useInputHistory } from "./hooks/useInputHistory";
 
-type Provider = "codex" | "copilot";
+type Provider = "codex" | "copilot" | "claude";
 
 type InputMode =
   | { kind: "chat" }
