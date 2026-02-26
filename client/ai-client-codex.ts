@@ -188,7 +188,7 @@ class AIClientCodex implements IAIClient {
     messages: ChatMessage[],
     tools: ToolDefinition[],
     onChunk?: OnChunkCallback,
-    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback }
+    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback; toolChoice?: "auto" | "required" | "none" }
   ): Promise<ChatResponse> {
     const maxRetries = 3;
 
@@ -200,7 +200,7 @@ class AIClientCodex implements IAIClient {
       instructions,
       input: this.transformMessages(messages),
       tools: this.transformTools(tools),
-      tool_choice: "auto",
+      tool_choice: options?.toolChoice ?? "auto",
       parallel_tool_calls: false,
       reasoning: { summary: "auto" },
       store: false,

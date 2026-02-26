@@ -1,0 +1,130 @@
+{
+  "id": "2026-02-24T21-32-46-189Z",
+  "timestamp": "2026-02-24T21:32:46.189Z",
+  "provider": "codex",
+  "model": "gpt-5.3-codex",
+  "entries": [
+    {
+      "type": "user",
+      "content": "I want under the input  to have tokens + context summuray also the model na,e"
+    },
+    {
+      "type": "assistant",
+      "content": "",
+      "streaming": true
+    },
+    {
+      "type": "tool",
+      "content": "▶ read (file_path=index.tsx, start_line=1, end_line=260)"
+    },
+    {
+      "type": "tool",
+      "content": "✓ read completed 0.0s"
+    },
+    {
+      "type": "tool",
+      "content": "▶ read (file_path=index.tsx, start_line=260, end_line=520)"
+    },
+    {
+      "type": "tool",
+      "content": "✓ read completed 0.0s"
+    },
+    {
+      "type": "tool",
+      "content": "▶ read (file_path=index.tsx, start_line=520, end_line=760)"
+    },
+    {
+      "type": "tool",
+      "content": "✓ read completed 0.0s"
+    },
+    {
+      "type": "tool",
+      "content": "▶ edit (file_path=index.tsx, old_text=  const tokenDisplay = formatTokenDis..., new_text=  const tokenDis...)"
+    },
+    {
+      "type": "tool",
+      "content": "Edited index.tsx\n-   const tokenDisplay = formatTokenDisplay();\n-   const placeholderBase = `[${provider}:${selectedModel}${tokenDisplay ? ` ${tokenDisplay}` : \"\"}]`;\n-   const placeholder = loading\n-     ? \"waiting... (Ctrl+C to abort)\"\n-     : `${placeholderBase} Ask something... (/ for commands)`;\n- \n+   const tokenDisplay = formatTokenDisplay();\n+   const contextSummary = tokenDisplay\n+     ? `Tokens: ${tokenDisplay}`\n+     : \"Tokens: no usage yet\";\n+   const modelSummary = `Model: ${provider}:${selectedModel}`;\n+   const placeholder = loading\n+     ? \"waiting... (Ctrl+C to abort)\"\n+     : \"Ask something... (/ for commands)\";\n+ "
+    },
+    {
+      "type": "tool",
+      "content": "▶ edit (file_path=index.tsx, old_text=      {mode.kind === \"chat\" && (\n    ..., new_text=      {mode.kind...)"
+    },
+    {
+      "type": "tool",
+      "content": "Edited index.tsx\n-       {mode.kind === \"chat\" && (\n-         <Box>\n-           <Text bold color=\"cyan\">\n-             {\"❯ \"}\n-           </Text>\n-           <TextInput\n-             value={input}\n-             onChange={handleInputChange}\n-             onSubmit={handleSubmit}\n-             placeholder={placeholder}\n-           />\n-         </Box>\n-       )}\n- \n+       {mode.kind === \"chat\" && (\n+         <Box flexDirection=\"column\">\n+           <Box>\n+             <Text bold color=\"cyan\">\n+               {\"❯ \"}\n+             </Text>\n+             <TextInput\n+               value={input}\n+               onChange={handleInputChange}\n+               onSubmit={handleSubmit}\n+               placeholder={placeholder}\n+             />\n+           </Box>\n+           <Box marginLeft={2}>\n+             <Text dimColor>{contextSummary}</Text>\n+             <Text dimColor>{\"  |  \"}</Text>\n+             <Text dimColor>{modelSummary}</Text>\n+           </Box>\n+         </Box>\n+       )}\n+ "
+    },
+    {
+      "type": "tool",
+      "content": "✓ attempt_completion completed "
+    },
+    {
+      "type": "user",
+      "content": "when we load a session the tokens are not saved and context too ..."
+    },
+    {
+      "type": "assistant",
+      "content": "",
+      "streaming": true
+    },
+    {
+      "type": "tool",
+      "content": "▶ grep (pattern=tokens|context|model|session, path=., max_results=200)"
+    },
+    {
+      "type": "tool",
+      "content": "✓ grep completed 0.0s"
+    },
+    {
+      "type": "tool",
+      "content": "▶ read (file_path=sessions.ts, start_line=1, end_line=220)"
+    },
+    {
+      "type": "tool",
+      "content": "✓ read completed 0.0s"
+    },
+    {
+      "type": "tool",
+      "content": "▶ read (file_path=hooks/useSession.ts, start_line=1, end_line=220)"
+    },
+    {
+      "type": "tool",
+      "content": "✓ read completed 0.0s"
+    },
+    {
+      "type": "tool",
+      "content": "▶ read (file_path=index.tsx, start_line=520, end_line=640)"
+    },
+    {
+      "type": "tool",
+      "content": "✓ read completed 0.0s"
+    },
+    {
+      "type": "tool",
+      "content": "▶ read (file_path=index.tsx, start_line=360, end_line=520)"
+    },
+    {
+      "type": "tool",
+      "content": "✓ read completed 0.0s"
+    },
+    {
+      "type": "tool",
+      "content": "▶ edit (file_path=sessions.ts, old_text=export interface Session {\n  id: stri..., new_text=export interfa...)"
+    },
+    {
+      "type": "tool",
+      "content": "Edited sessions.ts\n- export interface Session {\n-   id: string;\n-   timestamp: string;\n-   provider: string;\n-   model: string;\n-   entries: ChatEntry[];\n- }\n- \n+ export interface Session {\n+   id: string;\n+   timestamp: string;\n+   provider: string;\n+   model: string;\n+   entries: ChatEntry[];\n+   usage?: {\n+     promptTokens: number;\n+     completionTokens: number;\n+     totalTokens: number;\n+   };\n+ }\n+ "
+    },
+    {
+      "type": "tool",
+      "content": "▶ read (file_path=hooks/useContextManager.ts, start_line=1, end_line=220)"
+    },
+    {
+      "type": "tool",
+      "content": "✓ read completed 0.0s"
+    },
+    {
+      "type": "tool",
+      "content": "✓ attempt_completion completed "
+    }
+  ]
+}

@@ -187,7 +187,7 @@ class AIClientClaude implements IAIClient {
     messages: ChatMessage[],
     tools: ToolDefinition[],
     onChunk?: OnChunkCallback,
-    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback }
+    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback; toolChoice?: "auto" | "required" | "none" }
   ): Promise<ChatResponse> {
     const maxRetries = 3;
     const { system, messages: anthropicMessages } = this.transformMessages(messages);
@@ -207,6 +207,15 @@ class AIClientClaude implements IAIClient {
 
     if (hasTools) {
       body.tools = this.transformTools(tools);
+      // Anthropic uses { type: "auto" } / { type: "any" } format for tool_choice
+      const tc = options?.toolChoice;
+      if (tc === "required") {
+        body.tool_choice = { type: "any" };
+      } else if (tc === "none") {
+        // Don't send tool_choice, just omit tools
+      } else {
+        body.tool_choice = { type: "auto" };
+      }
     }
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {

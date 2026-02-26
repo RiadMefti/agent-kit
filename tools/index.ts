@@ -1,10 +1,29 @@
-import type { ToolEntry } from "../client/types";
+import type { ToolEntry, ToolDefinition } from "../client/types";
 import { bashTool, command } from "./bash-tool";
 import { grepTool, grep } from "./ripgrep-tool";
 import { readTool, writeTool, editTool, readFile, writeFile, editFile } from "./file-tools";
 import { todoReadTool, todoWriteTool, todoRead, todoWrite } from "./todo-tool";
 import { globTool, globSearch } from "./glob-tool";
 import { webFetchTool, webFetch } from "./web-fetch-tool";
+
+export const attemptCompletionTool: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "attempt_completion",
+    description:
+      "Call this tool when you have completed the task. Provide a brief summary of what you did as the result. This is the ONLY way to finish — you must call this tool when done.",
+    parameters: {
+      type: "object",
+      properties: {
+        result: {
+          type: "string",
+          description: "A brief summary of what was accomplished.",
+        },
+      },
+      required: ["result"],
+    },
+  },
+};
 
 export const baseToolEntries: ToolEntry[] = [
   {
@@ -95,6 +114,13 @@ export const baseToolEntries: ToolEntry[] = [
         max_length: number | null;
       };
       return await webFetch(url, max_length ?? undefined);
+    },
+  },
+  {
+    definition: attemptCompletionTool,
+    // Handler is a no-op — the agent loop intercepts this tool call directly
+    handler: async (args) => {
+      return (args as { result: string }).result ?? "Done.";
     },
   },
 ];

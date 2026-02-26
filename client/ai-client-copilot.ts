@@ -121,14 +121,14 @@ class AIClientCopilot implements IAIClient {
     messages: ChatMessage[],
     tools: ToolDefinition[],
     onChunk?: OnChunkCallback,
-    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback }
+    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback; toolChoice?: "auto" | "required" | "none" }
   ): Promise<ChatResponse> {
     const maxRetries = 3;
 
     const body: Record<string, unknown> = {
       model: this.model,
       messages,
-      tool_choice: "auto",
+      tool_choice: options?.toolChoice ?? "auto",
     };
 
     if (tools.length > 0) {

@@ -18,6 +18,48 @@ function usageMeta(entry: ChatEntry) {
 }
 
 function ToolMessage({ content }: { content: string }) {
+  // Detect file read output with line numbers (e.g. "1: ...")
+  const readLines = content.split("\n");
+  const isLikelyReadOutput =
+    readLines.length > 0 &&
+    readLines.some((line) => /^\d+: /.test(line)) &&
+    readLines.filter((line) => /^\d+: /.test(line)).length >= Math.min(3, readLines.length);
+
+  if (isLikelyReadOutput) {
+    const fileHeader = "📄 file output";
+    return (
+      <Box flexDirection="column" marginLeft={2}>
+        <Text bold color="cyan">{fileHeader}</Text>
+        {readLines.map((line, i) => {
+          const match = line.match(/^(\d+):\s?(.*)$/);
+          if (!match) return <Text key={i} dimColor>{line}</Text>;
+          const [, num, text] = match;
+          const isComment = /^\s*\/\//.test(text) || /^\s*\*/.test(text);
+          const isImport = /^\s*import\b/.test(text);
+          const isString = /"[^"]*"|'[^']*'/.test(text);
+          const keyword = /(\bfunction\b|\bconst\b|\blet\b|\bvar\b|\bif\b|\breturn\b|\bexport\b)/.test(text);
+
+          return (
+            <Box key={i}>
+              <Text dimColor>{`${num.padStart(4, " ")} | `}</Text>
+              {isComment ? (
+                <Text color="gray">{text}</Text>
+              ) : isImport ? (
+                <Text color="magenta">{text}</Text>
+              ) : keyword ? (
+                <Text color="cyan">{text}</Text>
+              ) : isString ? (
+                <Text color="green">{text}</Text>
+              ) : (
+                <Text>{text}</Text>
+              )}
+            </Box>
+          );
+        })}
+      </Box>
+    );
+  }
+
   // Detect diff output from edit tool
   if (content.includes("\n- ") && content.includes("\n+ ")) {
     const lines = content.split("\n");

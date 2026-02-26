@@ -13,6 +13,11 @@ export interface Session {
   provider: string;
   model: string;
   entries: ChatEntry[];
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
 }
 
 async function ensureDir() {

@@ -92,7 +92,7 @@ export interface IAIClient {
     messages: ChatMessage[],
     tools: ToolDefinition[],
     onChunk?: OnChunkCallback,
-    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback }
+    options?: { signal?: AbortSignal; onRetry?: OnRetryCallback; toolChoice?: "auto" | "required" | "none" }
   ): Promise<ChatResponse>;
 }
 

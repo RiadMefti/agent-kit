@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { render, Box, Text, Static, useApp, useInput } from "ink";
+import { spawn } from "child_process";
 import TextInput from "ink-text-input";
 import SelectInput from "ink-select-input";
 import Spinner from "ink-spinner";
@@ -34,7 +35,10 @@ const COMMANDS: Command[] = [
   { value: "/provider", desc: "Switch AI provider" },
   { value: "/login", desc: "Login to current provider" },
   { value: "/status", desc: "Show auth & model status" },
+  { value: "/tokens", desc: "Show token usage for current session" },
   { value: "/sessions", desc: "Browse and resume past sessions" },
+  { value: "/diff", desc: "Show git diff summary for this workspace" },
+  { value: "/clear", desc: "Clear chat messages from the screen" },
 ];
 
 const PROVIDER_ITEMS = Object.values(PROVIDERS).map((p) => ({
@@ -67,7 +71,7 @@ function App() {
 
   const { handleApprovalNeeded, clearApprovalCache } = useApproval(setMode);
   const { conversationHistoryRef, resumeSession } = useSession(entries, loading, provider, selectedModel);
-  const { addUsage, pruneHistory, formatTokenDisplay, resetTokens, isWarning } = useContextManager(selectedModel);
+  const { addUsage, pruneHistory, formatTokenDisplay, resetTokens, isWarning, totalUsage, utilization } = useContextManager(selectedModel);
   const { push: pushHistory, navigate: navigateHistory } = useInputHistory();
 
   const streamingIndexRef = useRef<number>(-1);
@@ -165,6 +169,23 @@ function App() {
         return;
       }
 
+      if (cmd === "/tokens") {
+        const usage = totalUsage;
+        const contextUsedPct = (utilization * 100).toFixed(1);
+        const warning = isWarning ? " ⚠️ nearing context limit" : "";
+        addEntry({
+          type: "system",
+          content: [
+            `Session token usage (${selectedModel}):`,
+            `- Prompt tokens: ${usage.promptTokens.toLocaleString()}`,
+            `- Completion tokens: ${usage.completionTokens.toLocaleString()}`,
+            `- Total tokens: ${usage.totalTokens.toLocaleString()}`,
+            `- Context utilization: ${contextUsedPct}%${warning}`,
+          ].join("\n"),
+        });
+        return;
+      }
+
       if (cmd === "/provider") {
         setMode({ kind: "provider" });
         return;
@@ -180,9 +201,45 @@ function App() {
         return;
       }
 
+      if (cmd === "/diff") {
+        try {
+          const output = await new Promise<string>((resolve, reject) => {
+            const child = spawn("git", ["diff", "--stat"], { cwd: process.cwd() });
+            let stdout = "";
+            let stderr = "";
+
+            child.stdout.on("data", (chunk) => {
+              stdout += String(chunk);
+            });
+            child.stderr.on("data", (chunk) => {
+              stderr += String(chunk);
+            });
+            child.on("error", (err) => reject(err));
+            child.on("close", (code) => {
+              if (code === 0) resolve(stdout.trim());
+              else reject(new Error(stderr.trim() || `git diff --stat exited with code ${code}`));
+            });
+          });
+
+          addEntry({
+            type: "system",
+            content: output.length > 0 ? output : "No changes in current working tree.",
+          });
+        } catch (e) {
+          addEntry({ type: "system", content: `Failed to get diff summary: ${String(e)}` });
+        }
+        return;
+      }
+
+      if (cmd === "/clear") {
+        setEntries([]);
+        setCommittedCount(0);
+        return;
+      }
+
       addEntry({ type: "system", content: `Unknown command: ${cmd}` });
     },
-    [selectedModel, provider],
+    [selectedModel, provider, totalUsage, utilization, isWarning],
   );
 
   const handleModelSelect = useCallback(
@@ -355,6 +412,11 @@ function App() {
         const result = await agent.run(trimmed);
         cleanupStream();
 
+        const runSummary = result.answer.trim().length > 0
+          ? `Summary: ${result.answer.trim()}`
+          : "Summary: Agent completed without a textual final answer.";
+        addEntry({ type: "system", content: runSummary });
+
         const promptTokens = result.usage?.promptTokens;
         const contextPercent = promptTokens != null
           ? (promptTokens / getContextWindow(selectedModel)) * 100
@@ -415,10 +477,13 @@ function App() {
       : [];
 
   const tokenDisplay = formatTokenDisplay();
-  const placeholderBase = `[${provider}:${selectedModel}${tokenDisplay ? ` ${tokenDisplay}` : ""}]`;
+  const contextSummary = tokenDisplay
+    ? `Tokens: ${tokenDisplay}`
+    : "Tokens: no usage yet";
+  const modelSummary = `Model: ${provider}:${selectedModel}`;
   const placeholder = loading
     ? "waiting... (Ctrl+C to abort)"
-    : `${placeholderBase} Ask something... (/ for commands)`;
+    : "Ask something... (/ for commands)";
 
   const currentStatus = statusText(agentStatus);
 
@@ -455,7 +520,7 @@ function App() {
 
       {loading && currentStatus && (
         <Box>
-          <Text color="yellow">
+          <Text>
             <Spinner type="dots" />{" "}
           </Text>
           <Text dimColor>{currentStatus}</Text>
@@ -505,9 +570,8 @@ function App() {
               setProvider(session.provider as Provider);
               setSelectedModel(session.model);
               clearApprovalCache();
-              resetTokens();
               setCommittedCount(0);
-              addEntry({ type: "system", content: `Resumed session (${session.provider}:${session.model})` });
+              addEntry({ type: "system", content: `Resumed session (${session.provider}:${session.model}) — token usage will track from next request` });
             }
             setMode({ kind: "chat" });
           }}
@@ -525,16 +589,23 @@ function App() {
       )}
 
       {mode.kind === "chat" && (
-        <Box>
-          <Text bold color="cyan">
-            {"❯ "}
-          </Text>
-          <TextInput
-            value={input}
-            onChange={handleInputChange}
-            onSubmit={handleSubmit}
-            placeholder={placeholder}
-          />
+        <Box flexDirection="column">
+          <Box>
+            <Text bold color="cyan">
+              {"❯ "}
+            </Text>
+            <TextInput
+              value={input}
+              onChange={handleInputChange}
+              onSubmit={handleSubmit}
+              placeholder={placeholder}
+            />
+          </Box>
+          <Box marginLeft={2}>
+            <Text dimColor>{contextSummary}</Text>
+            <Text dimColor>{"  |  "}</Text>
+            <Text dimColor>{modelSummary}</Text>
+          </Box>
         </Box>
       )}
     </>

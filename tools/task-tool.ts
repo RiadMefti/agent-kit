@@ -1,7 +1,7 @@
 import type { ToolDefinition, ToolEntry, IAIClient } from "../client/types";
 import Agent from "../agent/agent";
 
-const DEFAULT_SUBAGENT_SYSTEM_PROMPT = `You are a focused sub-agent. Complete the task you are given thoroughly and return a clear, concise answer. Use the tools available to you as needed.`;
+const DEFAULT_SUBAGENT_SYSTEM_PROMPT = `You are a focused sub-agent. Complete the task you are given thoroughly using your tools. When you are done, call the attempt_completion tool with your result.`;
 
 
 export function createTaskToolEntry(
