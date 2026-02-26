@@ -2,6 +2,8 @@ import type { ToolDefinition } from "../client/types";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
+const MAX_READ_SIZE = 1024 * 1024; // 1MB limit
+
 export async function readFile(
   filePath: string,
   startLine?: number,
@@ -9,6 +11,10 @@ export async function readFile(
 ): Promise<string> {
   try {
     const file = Bun.file(filePath);
+    const size = file.size;
+    if (size > MAX_READ_SIZE) {
+      return `Error: File is too large (${(size / 1024 / 1024).toFixed(1)}MB). Max readable size is 1MB. Use start_line/end_line to read a specific range, or use bash with head/tail for large files.`;
+    }
     const text = await file.text();
     const lines = text.split("\n");
 

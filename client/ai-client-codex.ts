@@ -11,6 +11,15 @@ import type {
 
 const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 
+function parseApiError(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed?.error?.message || parsed?.message || parsed?.error || raw;
+  } catch {
+    return raw.slice(0, 200);
+  }
+}
+
 class AIClientCodex implements IAIClient {
   private model: string;
   private accessToken: string;
@@ -126,8 +135,8 @@ class AIClientCodex implements IAIClient {
           if (event.type === "response.completed" && event.response) {
             responseData = event.response;
           }
-        } catch {
-          // skip malformed lines
+        } catch (e) {
+          console.error(`[codex] Malformed SSE event: ${String(e)}`);
         }
       }
     }
@@ -223,7 +232,7 @@ class AIClientCodex implements IAIClient {
 
         if (!res.ok) {
           const err = await res.text();
-          throw new Error(`Codex API error ${res.status}: ${err}`);
+          throw new Error(`Codex API error ${res.status}: ${parseApiError(err)}`);
         }
 
         const data = await this.parseSSEStream(res, onChunk);

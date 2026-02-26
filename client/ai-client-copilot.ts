@@ -11,6 +11,15 @@ import type {
 
 const COPILOT_ENDPOINT = "https://api.githubcopilot.com/chat/completions";
 
+function parseApiError(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed?.error?.message || parsed?.message || parsed?.error || raw;
+  } catch {
+    return raw.slice(0, 200);
+  }
+}
+
 class AIClientCopilot implements IAIClient {
   private model: string;
   private accessToken: string;
@@ -91,8 +100,8 @@ class AIClientCopilot implements IAIClient {
               if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
             }
           }
-        } catch {
-          // skip malformed lines
+        } catch (e) {
+          console.error(`[copilot] Malformed SSE event: ${String(e)}`);
         }
       }
     }
@@ -158,7 +167,7 @@ class AIClientCopilot implements IAIClient {
 
         if (!res.ok) {
           const err = await res.text();
-          throw new Error(`Copilot API error ${res.status}: ${err}`);
+          throw new Error(`Copilot API error ${res.status}: ${parseApiError(err)}`);
         }
 
         if (onChunk) {

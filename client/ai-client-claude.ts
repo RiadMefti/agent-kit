@@ -14,6 +14,15 @@ const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages?beta=true";
 const ANTHROPIC_VERSION = "2023-06-01";
 const MAX_TOKENS = 16384;
 
+function parseApiError(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed?.error?.message || parsed?.message || parsed?.error || raw;
+  } catch {
+    return raw.slice(0, 200);
+  }
+}
+
 const OS_NAME = platform() === "darwin" ? "MacOS" : platform() === "win32" ? "Windows" : "Linux";
 const ARCH = arch();
 
@@ -174,8 +183,8 @@ class AIClientClaude implements IAIClient {
               usage.output_tokens = event.usage.output_tokens;
             }
           }
-        } catch {
-          // skip malformed lines
+        } catch (e) {
+          console.error(`[claude] Malformed SSE event: ${String(e)}`);
         }
       }
     }
@@ -252,7 +261,7 @@ class AIClientClaude implements IAIClient {
 
         if (!res.ok) {
           const err = await res.text();
-          throw new Error(`Anthropic API error ${res.status}: ${err}`);
+          throw new Error(`Anthropic API error ${res.status}: ${parseApiError(err)}`);
         }
 
         const { text, toolCalls, usage } = await this.parseSSEStream(res, onChunk);

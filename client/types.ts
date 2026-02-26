@@ -85,6 +85,7 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  latestPromptTokens?: number;
 }
 
 export interface IAIClient {

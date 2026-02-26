@@ -1,6 +1,6 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useMemo } from "react";
 import { render, Box, Text, Static, useApp, useInput } from "ink";
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import TextInput from "ink-text-input";
 import SelectInput from "ink-select-input";
 import Spinner from "ink-spinner";
@@ -345,6 +345,7 @@ function App() {
             ? `${(event.duration / 1000).toFixed(1)}s`
             : "";
 
+          // Show edit diffs inline
           if (event.name === "edit" && event.result) {
             try {
               const parsed = JSON.parse(event.result);
@@ -356,6 +357,21 @@ function App() {
           }
 
           addEntry({ type: "tool", content: `✓ ${event.name} completed ${time}` });
+
+          // Show tool output for key tools so users can see what the agent sees
+          if (event.result && (event.name === "bash" || event.name === "read" || event.name === "grep" || event.name === "glob")) {
+            try {
+              const parsed = JSON.parse(event.result);
+              const output = typeof parsed.result === "string" ? parsed.result : JSON.stringify(parsed.result);
+              if (output && output.length > 0) {
+                const MAX_OUTPUT = 1500;
+                const truncated = output.length > MAX_OUTPUT
+                  ? output.slice(0, MAX_OUTPUT) + `\n... (${output.length} chars total)`
+                  : output;
+                addEntry({ type: "tool", content: truncated });
+              }
+            } catch {}
+          }
         }
       };
 
@@ -404,7 +420,9 @@ function App() {
         onStatusChange: (status) => setAgentStatus(status),
         onRetry: (attempt, maxRetries, error) => {
           setAgentStatus({ phase: "retrying", attempt, maxRetries });
-          addEntry({ type: "system", content: `Retrying (${attempt}/${maxRetries})... ${error.slice(0, 100)}` });
+          // Extract clean error message — strip raw JSON
+          const cleanError = error.replace(/\{[\s\S]*$/, "").trim() || error.slice(0, 120);
+          addEntry({ type: "system", content: `Retrying (${attempt}/${maxRetries})... ${cleanError}` });
         },
       });
 
@@ -412,14 +430,15 @@ function App() {
         const result = await agent.run(trimmed);
         cleanupStream();
 
-        const runSummary = result.answer.trim().length > 0
-          ? `Summary: ${result.answer.trim()}`
-          : "Summary: Agent completed without a textual final answer.";
-        addEntry({ type: "system", content: runSummary });
+        // Only show a system note if the agent finished without any text
+        if (result.answer.trim().length === 0) {
+          addEntry({ type: "system", content: "Agent completed." });
+        }
 
-        const promptTokens = result.usage?.promptTokens;
-        const contextPercent = promptTokens != null
-          ? (promptTokens / getContextWindow(selectedModel)) * 100
+        const promptTokens = result.usage?.totalTokens;
+        const latestPrompt = result.usage?.latestPromptTokens;
+        const contextPercent = latestPrompt != null
+          ? (latestPrompt / getContextWindow(selectedModel)) * 100
           : undefined;
 
         setEntries((prev) => {
@@ -477,10 +496,20 @@ function App() {
       : [];
 
   const tokenDisplay = formatTokenDisplay();
+  const contextPct = utilization > 0 ? ` (${(utilization * 100).toFixed(0)}% ctx)` : "";
   const contextSummary = tokenDisplay
-    ? `Tokens: ${tokenDisplay}`
+    ? `Tokens: ${tokenDisplay}${contextPct}`
     : "Tokens: no usage yet";
   const modelSummary = `Model: ${provider}:${selectedModel}`;
+
+  const gitBranch = useMemo(() => {
+    try {
+      return execSync("git rev-parse --abbrev-ref HEAD", { stdio: ["pipe", "pipe", "pipe"] }).toString().trim();
+    } catch {
+      return null;
+    }
+  }, []);
+
   const placeholder = loading
     ? "waiting... (Ctrl+C to abort)"
     : "Ask something... (/ for commands)";
@@ -605,6 +634,12 @@ function App() {
             <Text dimColor>{contextSummary}</Text>
             <Text dimColor>{"  |  "}</Text>
             <Text dimColor>{modelSummary}</Text>
+            {gitBranch && (
+              <>
+                <Text dimColor>{"  |  "}</Text>
+                <Text dimColor color="magenta">{`⎇ ${gitBranch}`}</Text>
+              </>
+            )}
           </Box>
         </Box>
       )}

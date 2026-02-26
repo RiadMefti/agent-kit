@@ -4,14 +4,16 @@ import { getContextWindow } from "../client/providers";
 
 function summarizeMessage(message: ChatMessage): string {
   if (message.role === "tool") {
-    const content = message.content.length > 120
-      ? `${message.content.slice(0, 120)}...`
+    const content = message.content.length > 200
+      ? `${message.content.slice(0, 200)}...`
       : message.content;
     return `- tool(${message.tool_call_id}): ${content}`;
   }
 
   const content = (message.content ?? "").replace(/\s+/g, " ").trim();
-  const clipped = content.length > 180 ? `${content.slice(0, 180)}...` : content;
+  // Keep more content for user/assistant messages to preserve decisions and context
+  const maxLen = message.role === "user" ? 300 : 400;
+  const clipped = content.length > maxLen ? `${content.slice(0, maxLen)}...` : content;
   return `- ${message.role}: ${clipped || "(empty)"}`;
 }
 
@@ -43,43 +45,53 @@ export function useContextManager(model: string) {
   }
 
   const contextWindow = getContextWindow(model);
-  const utilization = totalUsage.promptTokens / contextWindow;
+  // Use latestPromptTokens for utilization — this reflects actual context window fill
+  const latestPrompt = totalUsage.latestPromptTokens ?? 0;
+  const utilization = latestPrompt / contextWindow;
   const isWarning = utilization > 0.8;
 
   const addUsage = useCallback((usage?: TokenUsage) => {
     if (!usage) return;
     setTotalUsage((prev) => ({
-      promptTokens: usage.promptTokens, // latest prompt tokens = actual context size
+      promptTokens: prev.promptTokens + usage.promptTokens,
       completionTokens: prev.completionTokens + usage.completionTokens,
       totalTokens: prev.totalTokens + usage.totalTokens,
+      latestPromptTokens: usage.latestPromptTokens ?? usage.promptTokens,
     }));
   }, []);
 
   const pruneHistory = useCallback(
     (history: ChatMessage[]): ChatMessage[] => {
-      if (totalUsage.promptTokens < contextWindow * 0.8) return history;
+      if (latestPrompt < contextWindow * 0.8) return history;
 
       const systemMessages = history.filter((m) => m.role === "system");
       const nonSystem = history.filter((m) => m.role !== "system");
-      const kept = nonSystem.slice(-8);
+
+      // Keep more recent messages for better context continuity
+      // At 80% context, keep last 20 messages; at 90%+, keep last 12
+      const keepCount = latestPrompt > contextWindow * 0.9 ? 12 : 20;
+      const kept = nonSystem.slice(-keepCount);
       const removed = nonSystem.slice(0, Math.max(0, nonSystem.length - kept.length));
+
+      if (removed.length === 0) return history;
+
       const summary = buildCompactionSummary(removed);
 
       return summary
         ? [...systemMessages, summary, ...kept]
         : [...systemMessages, ...kept];
     },
-    [totalUsage.promptTokens, contextWindow]
+    [latestPrompt, contextWindow]
   );
 
   const formatTokenDisplay = useCallback((): string => {
-    if (totalUsage.promptTokens === 0) return "";
-    const tokens = totalUsage.promptTokens;
+    if (totalUsage.totalTokens === 0) return "";
+    const tokens = totalUsage.totalTokens;
     if (tokens >= 1000) {
       return `${(tokens / 1000).toFixed(1)}k tokens`;
     }
     return `${tokens} tokens`;
-  }, [totalUsage.promptTokens]);
+  }, [totalUsage.totalTokens]);
 
   const resetTokens = useCallback(() => {
     setTotalUsage({ promptTokens: 0, completionTokens: 0, totalTokens: 0 });

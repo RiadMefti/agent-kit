@@ -1,4 +1,4 @@
-const SAFE_TOOLS = new Set(["read", "glob", "grep", "web_fetch", "todo_read"]);
+const SAFE_TOOLS = new Set(["read", "glob", "grep", "todo_read"]);
 
 export function requiresApproval(toolName: string): boolean {
   return !SAFE_TOOLS.has(toolName);

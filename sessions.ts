@@ -33,8 +33,8 @@ export async function saveSession(session: Session): Promise<void> {
     await ensureDir();
     await Bun.write(sessionPath(session.id), JSON.stringify(session, null, 2));
     await pruneOldSessions();
-  } catch {
-    // best effort — don't crash the app if save fails
+  } catch (e) {
+    console.error(`[agent-kit] Failed to save session: ${String(e)}`);
   }
 }
 
@@ -56,8 +56,8 @@ export async function listSessions(): Promise<Session[]> {
         if (parsed && parsed.id && parsed.entries) {
           sessions.push(parsed);
         }
-      } catch {
-        // skip corrupt files
+      } catch (e) {
+        console.error(`[agent-kit] Failed to parse session file ${file}: ${String(e)}`);
       }
     }
     return sessions;
@@ -76,8 +76,8 @@ async function pruneOldSessions(): Promise<void> {
         await rm(join(SESSIONS_DIR, f));
       }
     }
-  } catch {
-    // best effort
+  } catch (e) {
+    console.error(`[agent-kit] Failed to prune old sessions: ${String(e)}`);
   }
 }
 

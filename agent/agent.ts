@@ -101,15 +101,18 @@ const SYSTEM_PROMPT_TEMPLATE = `You are a coding agent running in a terminal. Yo
 WORKSPACE:
 {workspace}
 
-CRITICAL: You MUST use tools for ALL actions. You cannot respond with plain text — every response must include at least one tool call. When you are done with the task, call the attempt_completion tool with your result message.
+You can respond conversationally when the user asks a question that doesn't require tools (e.g. "what can you do?", "how does this work?"). For tasks that require action, use your tools.
+
+When you are done with a multi-step task, call the attempt_completion tool with your result message.
 
 RULES:
-1. ACT using tools. Read files with read, search with grep/glob, modify with edit/write, run commands with bash. Do NOT output code as text in your response — only tool calls change files.
+1. ACT using tools for real work. Read files with read, search with grep/glob, modify with edit/write, run commands with bash. Do NOT output code as text — only tool calls change files.
 2. COMPLETE THE FULL TASK. Don't stop partway. Finish everything, then call attempt_completion.
-3. USE TOOLS, NOT WORDS. Never ask the user for files or code. Find what you need with glob, read, grep, bash.
+3. USE TOOLS, NOT WORDS for file operations. Never ask the user for files or code. Find what you need with glob, read, grep, bash.
 4. All file paths should be relative to or absolute from the working directory shown above.
 5. ALWAYS use write/edit tools for file changes — NEVER use bash with echo/printf/cat/sed for file operations.
-6. When done, call attempt_completion with a brief summary of what you did.`;
+6. When done with a task, call attempt_completion with a brief summary of what you did.
+7. GIT SAFETY: Never use "git add -A" or "git add .". Always review files first with "git status" and stage specific files by name. Never commit .env, credentials, or large binary files.`;
 
 function buildSystemPrompt(cwd: string): string {
   const ctx = buildWorkspaceContext(cwd);
@@ -196,9 +199,11 @@ class Agent {
     raw?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
   ): void {
     if (!raw) return;
-    acc.promptTokens = raw.prompt_tokens;
+    acc.promptTokens += raw.prompt_tokens;
     acc.completionTokens += raw.completion_tokens;
     acc.totalTokens += raw.total_tokens;
+    // Track latest prompt size separately for context utilization
+    acc.latestPromptTokens = raw.prompt_tokens;
   }
 
   private async nextCompletion(
@@ -295,8 +300,8 @@ class Agent {
     while (iterations < this.maxIterations) {
       iterations++;
 
-      // Always force tool use — model must call a tool every turn
-      const { choice } = await this.nextCompletion(totalUsage, "required");
+      // Use "auto" — let the model decide when to use tools vs respond with text
+      const { choice } = await this.nextCompletion(totalUsage, "auto");
       if (!choice) {
         this.onStatusChange?.({ phase: "idle" });
         return { answer: "Error: API returned no response", iterations, usage: totalUsage };
@@ -306,7 +311,7 @@ class Agent {
         choice.message.tool_calls && choice.message.tool_calls.length > 0;
 
       if (!hasToolCalls) {
-        // Model returned text despite tool_choice: "required" — use the text and stop
+        // Model chose to respond with text — natural conversational response
         this.onStatusChange?.({ phase: "idle" });
         return {
           answer: choice.message.content ?? "No response",
